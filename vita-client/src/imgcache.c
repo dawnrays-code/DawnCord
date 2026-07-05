@@ -193,10 +193,17 @@ void img_store(const char *key, const void *jpeg, size_t jpeg_len)
 
     if (jpeg && jpeg_len > 0)
         s->tex = vita2d_load_JPEG_buffer(jpeg, jpeg_len);
-    /* Sized keys ("url#160") are attachment images and stay rectangular;
-       plain keys are avatars/icons and go round. */
-    if (s->tex && !strchr(s->key, '#'))
-        mask_circle(s->tex);
+    if (s->tex) {
+        /* vita2d defaults to point sampling; everything here is drawn
+           scaled down (64px avatars to 36, icons to 24), so bilinear is
+           what keeps the round edges and thumbnails from looking jagged. */
+        vita2d_texture_set_filters(s->tex, SCE_GXM_TEXTURE_FILTER_LINEAR,
+                                   SCE_GXM_TEXTURE_FILTER_LINEAR);
+        /* Sized keys ("url#160") are attachment images and stay
+           rectangular; plain keys are avatars/icons and go round. */
+        if (!strchr(s->key, '#'))
+            mask_circle(s->tex);
+    }
     s->state = s->tex ? SLOT_READY : SLOT_FAILED;
 }
 

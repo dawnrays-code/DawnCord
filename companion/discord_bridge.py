@@ -26,8 +26,11 @@ log = logging.getLogger("dawncord.discord")
 # by whatever URL a LAN client sends, so an allowlist keeps the companion
 # from being used as a proxy into arbitrary (or internal) hosts. Tenor,
 # Giphy, Imgur and YouTube thumbnails cover what people actually paste.
+# Suffix entries (leading dot) match any subdomain: Tenor and Klipy serve
+# GIF stills from numbered/rotating hosts (media1.tenor.com, ...), so an
+# exact host would miss most of them.
 _IMAGE_HOSTS = ("cdn.discordapp.com", ".discordapp.net", ".discordapp.com",
-                "media.tenor.com", "c.tenor.com", ".giphy.com",
+                ".tenor.com", ".giphy.com", ".klipy.com",
                 "i.imgur.com", "i.ytimg.com", "img.youtube.com")
 
 # The wire protocol caps payloads at 64 KiB; base64 adds ~33%, so the
