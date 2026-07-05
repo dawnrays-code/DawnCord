@@ -1,0 +1,128 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  host-tests:
+    name: Host tests (state.c, config.c)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and run
+        working-directory: vita-client
+        run: |
+          gcc -Wall -Wextra -Iinclude -Isrc/cjson \
+            test/state_test.c src/state.c src/b64.c src/cjson/cJSON.c -o state_test
+          ./state_test
+          gcc -Wall -Wextra -Iinclude test/config_test.c src/config.c -o config_test
+          ./config_test
+
+  companion-tests:
+    name: Companion integration test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pillow  # the fake bridge generates a test JPEG
+      - run: python test-client/integration_test.py
+
+  vpk:
+    name: Build DawnCord.vpk
+    runs-on: ubuntu-latest
+    container: vitasdk/vitasdk:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build tools
+        run: |
+          command -v cmake >/dev/null && command -v make >/dev/null && exit 0
+          if command -v apk >/dev/null; then apk add --no-cache cmake make; \
+          else apt-get update && apt-get install -y cmake make; fi
+      - name: Build
+        run: |
+          # Tag builds bake the tag into the VPK version (v0.14 -> 00.14) so
+          # VitaShell sees each release as an upgrade and refreshes LiveArea.
+          EXTRA=""
+          case "$GITHUB_REF_NAME" in
+            v*) EXTRA="-DVITA_VERSION=$(printf '%05.2f' "${GITHUB_REF_NAME#v}")" ;;
+          esac
+          cmake -S vita-client -B vita-client/build $EXTRA
+          cmake --build vita-client/build -- -j"$(nproc)"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DawnCord-vpk
+          path: vita-client/build/DawnCord.vpk
+          if-no-files-found: error
+      # Unstripped ELF: needed to symbolicate psp2core crash dumps from
+      # real hardware (tools/crash_symbols.py). Also attached to releases
+      # below, since artifacts expire and need a GitHub login.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DawnCord-debug-elf
+          path: |
+            vita-client/build/DawnCord
+            vita-client/build/DawnCord.self
+          if-no-files-found: error
+
+  companion-exe:
+    name: Companion GUI .exe
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r companion/requirements.txt pyinstaller
+      # Playwright excluded: browser login is a from-source extra, and the
+      # exe would ship a useless (browser-less) copy of it otherwise.
+      - run: >
+          pyinstaller --onefile --noconsole --name DawnCord-Companion
+          --exclude-module playwright
+          --icon companion/icon.ico
+          --paths companion
+          companion/gui.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DawnCord-Companion-exe
+          path: dist/DawnCord-Companion.exe
+          if-no-files-found: error
+
+  # Tag a commit as v* and the VPK lands on a public GitHub release,
+  # downloadable without a GitHub account.
+  release:
+    name: Publish release
+    runs-on: ubuntu-latest
+    needs: [vpk, companion-exe]
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: DawnCord-vpk
+      - uses: actions/download-artifact@v4
+        with:
+          name: DawnCord-debug-elf
+          path: debug-elf
+      - uses: actions/download-artifact@v4
+        with:
+          name: DawnCord-Companion-exe
+      - name: Create release with VPK, companion exe and debug ELF
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The unstripped ELF feeds tools/crash_symbols.py: it must come
+          # from the same build as the VPK people install.
+          (cd debug-elf && zip -r ../DawnCord-debug-elf.zip .)
+          # Pre-release until 1.0: it works on real hardware, but the
+          # project is still moving fast.
+          gh release create "$GITHUB_REF_NAME" \
+            DawnCord.vpk DawnCord-Companion.exe DawnCord-debug-elf.zip \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "DawnCord $GITHUB_REF_NAME" \
+            --generate-notes \
+            --prerelease

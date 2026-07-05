@@ -1,0 +1,4 @@
+discord.py-self>=2.0
+playwright>=1.40
+pillow>=10
+aiohttp>=3.9

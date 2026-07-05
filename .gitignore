@@ -1,0 +1,31 @@
+# Companion secrets and runtime files: NEVER commit these. Ignored
+# everywhere, not just under companion/: running the packaged exe from
+# the repo root creates them right here.
+.token
+config.json
+*.log
+*.exe
+
+# Local Vita config (LAN IP + pair code)
+/config.txt
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Vita build artifacts
+vita-client/build/
+*.velf
+*.self
+*.vpk
+*.sfo
+
+# PyInstaller (companion exe builds)
+dist/
+build/
+*.spec
+
+# Local copies of release debug ELFs (for crash_symbols.py)
+*-debug-elf/
