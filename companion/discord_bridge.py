@@ -229,7 +229,16 @@ class DiscordBridge:
     async def join_voice(self, channel_id: int, vita_ip: str) -> bool:
         channel = self._client.get_channel(channel_id)
         if not isinstance(channel, discord.VoiceChannel):
+            log.warning("JOIN_VOICE for %s: not a voice channel", channel_id)
             return False
+        # Your account can only be in one voice channel at a time: if you're
+        # already connected from the desktop Discord app, that session gets
+        # moved here. DawnCord becomes your voice presence, it isn't a second
+        # one. Worth knowing when a join behaves unexpectedly.
+        if self._client.voice_clients:
+            log.info("JOIN_VOICE: account already had a voice session; "
+                     "moving it to %s", channel.name)
+        log.info("JOIN_VOICE '%s' -> streaming to %s", channel.name, vita_ip)
         from voice import VoiceRelay
         if self._voice is None:
             self._voice = VoiceRelay()

@@ -103,9 +103,13 @@ static void toggle_voice(const st_named *c)
         voice_stop();   /* switch channels: drop the old audio path */
     snprintf(st.voice_id, ST_ID_LEN, "%s", c->id);
     snprintf(st.voice_name, ST_NAME_LEN, "%s", c->name);
-    if (voice_start() < 0) {
+    int vr = voice_start();
+    if (vr < 0) {
         st.voice_id[0] = '\0';
-        state_set_status(&st, "Audio unavailable");
+        /* Specific reason, so a failed join is diagnosable at a glance. */
+        state_set_status(&st, vr == -2 ? "Voice: network error"
+                            : vr == -3 ? "Voice: thread error"
+                                       : "Voice: audio port error");
         return;
     }
     cJSON *o = cJSON_CreateObject();

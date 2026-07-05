@@ -50,7 +50,9 @@ static int16_t ring_pop(void)
 static int voice_thread_entry(SceSize args, void *argp)
 {
     (void)args; (void)argp;
-    int16_t out[GRAIN];
+    /* We stream and buffer mono, but play through a stereo port (the most
+       broadly supported mode): each mono sample is duplicated to L and R. */
+    int16_t out[GRAIN * 2];
     uint8_t buf[1600];
     int primed = 0;
 
@@ -74,12 +76,17 @@ static int voice_thread_entry(SceSize args, void *argp)
         if (!primed && ring_count() >= PRIME_SAMPLES)
             primed = 1;
 
-        int i = 0;
+        int f = 0;
         if (primed)
-            for (; i < GRAIN && ring_count() > 0; i++)
-                out[i] = ring_pop();
-        for (; i < GRAIN; i++)
-            out[i] = 0;               /* silence fill / underrun */
+            for (; f < GRAIN && ring_count() > 0; f++) {
+                int16_t s = ring_pop();
+                out[2 * f] = s;
+                out[2 * f + 1] = s;
+            }
+        for (; f < GRAIN; f++) {       /* silence fill / underrun */
+            out[2 * f] = 0;
+            out[2 * f + 1] = 0;
+        }
         if (primed && ring_count() == 0)
             primed = 0;               /* re-prime after we run dry */
 
@@ -94,9 +101,9 @@ int voice_start(void)
         return 0;
 
     audio_port = sceAudioOutOpenPort(SCE_AUDIO_OUT_PORT_TYPE_MAIN, GRAIN,
-                                     SAMPLE_RATE, SCE_AUDIO_OUT_MODE_MONO);
+                                     SAMPLE_RATE, SCE_AUDIO_OUT_MODE_STEREO);
     if (audio_port < 0)
-        return -1;
+        return -1;   /* audio port */
     int vol[2] = { SCE_AUDIO_OUT_MAX_VOL, SCE_AUDIO_OUT_MAX_VOL };
     sceAudioOutSetVolume(audio_port,
                          SCE_AUDIO_VOLUME_FLAG_L_CH | SCE_AUDIO_VOLUME_FLAG_R_CH,
@@ -108,7 +115,7 @@ int voice_start(void)
     if (udp_sock < 0) {
         sceAudioOutReleasePort(audio_port);
         audio_port = -1;
-        return -1;
+        return -2;   /* socket */
     }
     SceNetSockaddrIn addr;
     memset(&addr, 0, sizeof(addr));
@@ -119,7 +126,7 @@ int voice_start(void)
         sceNetSocketClose(udp_sock);
         sceAudioOutReleasePort(audio_port);
         udp_sock = audio_port = -1;
-        return -1;
+        return -2;   /* socket */
     }
     int nbio = 1;
     sceNetSetsockopt(udp_sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO,
@@ -127,14 +134,16 @@ int voice_start(void)
 
     r_head = r_tail = 0;
     running = 1;
+    /* Same priority as the network receiver: a known-good value (a too-low
+       relative priority makes CreateThread fail). */
     voice_thread = sceKernelCreateThread("dawncord_voice", voice_thread_entry,
-                                         0x10000080, 0x8000, 0, 0, NULL);
+                                         0x10000100, 0x8000, 0, 0, NULL);
     if (voice_thread < 0) {
         running = 0;
         sceNetSocketClose(udp_sock);
         sceAudioOutReleasePort(audio_port);
         udp_sock = audio_port = -1;
-        return -1;
+        return -3;   /* thread */
     }
     sceKernelStartThread(voice_thread, 0, NULL);
     started = 1;
