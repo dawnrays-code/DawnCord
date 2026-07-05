@@ -178,6 +178,7 @@ class VitaServer:
             MsgType.REQUEST_MESSAGES,
             MsgType.REQUEST_MEMBERS,
             MsgType.SEND_MESSAGE,
+            MsgType.JOIN_VOICE,
         ):
             await self.discord_bridge.wait_until_ready()
 
@@ -228,6 +229,19 @@ class VitaServer:
                 members = self.discord_bridge.get_members(channel_id)
                 writer.write(encode(MsgType.MEMBER_LIST,
                                     {"channel_id": str(channel_id), "members": members}))
+
+            elif msg_type == MsgType.JOIN_VOICE:
+                channel_id = int(payload["channel_id"])
+                vita_ip = writer.get_extra_info("peername")[0]
+                ok = await self.discord_bridge.join_voice(channel_id, vita_ip)
+                writer.write(encode(MsgType.VOICE_STATE,
+                                    {"active": ok,
+                                     "channel_id": str(channel_id) if ok else "0"}))
+
+            elif msg_type == MsgType.LEAVE_VOICE:
+                await self.discord_bridge.leave_voice()
+                writer.write(encode(MsgType.VOICE_STATE,
+                                    {"active": False, "channel_id": "0"}))
 
             elif msg_type == MsgType.REQUEST_IMAGE:
                 url = str(payload["url"])

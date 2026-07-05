@@ -88,6 +88,7 @@ class DiscordBridge:
         self._ready = asyncio.Event()
         self._http: aiohttp.ClientSession | None = None
         self._img_cache: dict[tuple[str, int], bytes | None] = {}
+        self._voice = None   # lazily created VoiceRelay
 
         self._client.event(self.on_ready)
         self._client.event(self.on_message)
@@ -168,19 +169,24 @@ class DiscordBridge:
 
         # by_category() yields (category, channels) in the same order as the
         # official Discord sidebar. Category rows go out with a "cat:" id so
-        # the client renders them as non-selectable headers.
+        # the client renders them as non-selectable headers. Voice channels
+        # go out with type "voice" so the client can render and join them.
         channels = []
         for category, chans in guild.by_category():
             texts = [c for c in chans
                      if isinstance(c, discord.TextChannel) and _readable(c)]
-            if not texts:
+            voices = [c for c in chans
+                      if isinstance(c, discord.VoiceChannel) and _readable(c)]
+            if not texts and not voices:
                 continue
             if category is not None:
                 channels.append({"id": f"cat:{category.id}",
                                  "name": _clean_name(category.name),
                                  "type": "category"})
             channels.extend({"id": str(c.id), "name": _clean_name(c.name),
-                             "type": str(c.type)} for c in texts)
+                             "type": "text"} for c in texts)
+            channels.extend({"id": str(c.id), "name": _clean_name(c.name),
+                             "type": "voice"} for c in voices)
         return channels
 
     async def get_messages(self, channel_id: int, limit: int = 50,
@@ -217,6 +223,26 @@ class DiscordBridge:
 
     def set_active_channel(self, channel_id: int):
         self._active_channel_id = channel_id
+
+    # --- voice (listen-only, optional) ---
+
+    async def join_voice(self, channel_id: int, vita_ip: str) -> bool:
+        channel = self._client.get_channel(channel_id)
+        if not isinstance(channel, discord.VoiceChannel):
+            return False
+        from voice import VoiceRelay
+        if self._voice is None:
+            self._voice = VoiceRelay()
+        try:
+            await self._voice.join(channel, vita_ip)
+            return True
+        except Exception:
+            log.exception("Failed to join voice %s", channel_id)
+            return False
+
+    async def leave_voice(self):
+        if self._voice is not None:
+            await self._voice.leave()
 
     # Order for the member rail: online people first, then away/busy,
     # offline (or unknown, common on big guilds where presences aren't

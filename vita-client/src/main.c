@@ -10,6 +10,7 @@
 #include "config.h"
 #include "imgcache.h"
 #include "b64.h"
+#include "voice.h"
 
 #include "cJSON.h"
 
@@ -78,6 +79,41 @@ static void request_members(const char *channel_id)
     send_json(MSG_REQUEST_MEMBERS, o);
 }
 
+/* Voice (listen-only). Joining opens the local audio path immediately so
+   the companion's first UDP frames aren't lost; a VOICE_STATE reply of
+   active=false tears it back down. */
+static void leave_voice(void)
+{
+    if (st.voice_id[0] == '\0')
+        return;
+    voice_stop();
+    st.voice_id[0] = '\0';
+    st.voice_name[0] = '\0';
+    net_send_message(&conn, MSG_LEAVE_VOICE, "{}");
+    state_set_status(&st, "Left voice");
+}
+
+static void toggle_voice(const st_named *c)
+{
+    if (strcmp(st.voice_id, c->id) == 0) {
+        leave_voice();
+        return;
+    }
+    if (st.voice_id[0])
+        voice_stop();   /* switch channels: drop the old audio path */
+    snprintf(st.voice_id, ST_ID_LEN, "%s", c->id);
+    snprintf(st.voice_name, ST_NAME_LEN, "%s", c->name);
+    if (voice_start() < 0) {
+        st.voice_id[0] = '\0';
+        state_set_status(&st, "Audio unavailable");
+        return;
+    }
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "channel_id", c->id);
+    send_json(MSG_JOIN_VOICE, o);
+    state_set_status(&st, "Joining voice...");
+}
+
 /* Scroll-back: ask for the chunk of history right before the oldest
    loaded message. The companion echoes "before" so the reply prepends
    instead of replacing the window. */
@@ -134,6 +170,23 @@ static void process_server_message(dawncord_message *msg)
     case MSG_TYPING:
         state_parse_typing(&st, msg->payload);
         break;
+
+    case MSG_VOICE_STATE: {
+        cJSON *root = cJSON_Parse(msg->payload);
+        int act = root && cJSON_IsTrue(
+            cJSON_GetObjectItemCaseSensitive(root, "active"));
+        if (act) {
+            state_set_status(&st, "In voice: %s", st.voice_name);
+        } else {
+            /* Companion couldn't join: tear the local audio path down. */
+            voice_stop();
+            st.voice_id[0] = '\0';
+            st.voice_name[0] = '\0';
+            state_set_status(&st, "Voice unavailable");
+        }
+        cJSON_Delete(root);
+        break;
+    }
 
     case MSG_MESSAGE_SENT_ACK: {
         cJSON *root = cJSON_Parse(msg->payload);
@@ -294,7 +347,10 @@ static void confirm_selection(void)
         const st_named *c = &st.channels[st.channel_sel];
         if (is_category(c->id))
             return;              /* headers aren't channels */
-        open_channel(c);
+        if (c->is_voice)
+            toggle_voice(c);     /* voice channels: listen, don't open chat */
+        else
+            open_channel(c);
     }
 }
 
@@ -595,6 +651,7 @@ int main(void)
         }
     }
 
+    voice_stop();
     net_disconnect(&conn);
     ui_term();
     sceKernelExitProcess(0);

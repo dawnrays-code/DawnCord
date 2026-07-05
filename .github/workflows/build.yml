@@ -79,9 +79,14 @@ jobs:
       - run: pip install -r companion/requirements.txt pyinstaller
       # Playwright excluded: browser login is a from-source extra, and the
       # exe would ship a useless (browser-less) copy of it otherwise.
+      # discord's bundled libopus is collected so voice decoding works in
+      # the frozen exe; voice_recv is a hidden import PyInstaller misses.
       - run: >
           pyinstaller --onefile --noconsole --name DawnCord-Companion
           --exclude-module playwright
+          --collect-binaries discord
+          --hidden-import discord.ext.voice_recv
+          --hidden-import nacl
           --icon companion/icon.ico
           --paths companion
           companion/gui.py

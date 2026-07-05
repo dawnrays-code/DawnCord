@@ -33,6 +33,8 @@ class MsgType(IntEnum):
     SET_CHANNEL = 0x0024
     REQUEST_IMAGE = 0x0025
     REQUEST_MEMBERS = 0x0026
+    JOIN_VOICE = 0x0027       # {channel_id}: relay this voice channel over UDP
+    LEAVE_VOICE = 0x0028      # {}: stop the relay
 
     # Companion -> Vita
     HANDSHAKE_ACK = 0x0002
@@ -51,6 +53,8 @@ class MsgType(IntEnum):
     # {"channel_id":..., "name":...}: someone started typing in the active
     # channel. Fire-and-forget push, the client just times it out.
     TYPING = 0x0017
+    # {"active": bool, "channel_id":...}: result of a JOIN/LEAVE_VOICE.
+    VOICE_STATE = 0x0018
     ERROR = 0x00FF
 
 

@@ -24,6 +24,7 @@ typedef struct {
     char id[ST_ID_LEN];
     char name[ST_NAME_LEN];
     char icon[ST_URL_LEN];       /* "" when the entry has no icon */
+    int is_voice;                /* channel entries only: a voice channel */
 } st_named;
 
 #define ST_MAX_EMBEDS       2
@@ -106,6 +107,10 @@ typedef struct {
     /* Attachment viewer overlay: URL of the image being shown full-size,
        "" when closed. */
     char expanded_image[ST_URL_LEN];
+
+    /* Voice: the channel currently being listened to, "" if none. */
+    char voice_id[ST_ID_LEN];
+    char voice_name[ST_NAME_LEN];
 
     /* Currently open guild/channel (set on selection, matched against
        incoming payloads so stale replies for a previous channel are

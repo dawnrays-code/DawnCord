@@ -18,6 +18,7 @@ typedef enum {
     MSG_IMAGE_DATA       = 0x0015,  /* {"key":..., "data": base64 jpeg|null} */
     MSG_MEMBER_LIST      = 0x0016,  /* {"channel_id":..., "members":[...]} */
     MSG_TYPING           = 0x0017,  /* {"channel_id":..., "name":...} push */
+    MSG_VOICE_STATE      = 0x0018,  /* {"active": bool, "channel_id":...} */
     MSG_SEND_MESSAGE     = 0x0020,
     MSG_REQUEST_GUILDS   = 0x0021,
     MSG_REQUEST_CHANNELS = 0x0022,
@@ -25,6 +26,8 @@ typedef enum {
     MSG_SET_CHANNEL      = 0x0024,
     MSG_REQUEST_IMAGE    = 0x0025,  /* {"url":..., "key":..., "size":...} */
     MSG_REQUEST_MEMBERS  = 0x0026,  /* {"channel_id":...} */
+    MSG_JOIN_VOICE       = 0x0027,  /* {"channel_id":...} */
+    MSG_LEAVE_VOICE      = 0x0028,  /* {} */
     MSG_ERROR            = 0x00FF,
 } dawncord_msg_type;
 

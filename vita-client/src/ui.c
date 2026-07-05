@@ -432,6 +432,8 @@ static void render_channel_rail(const app_state *st)
 
         int is_open = st->channel_id[0] &&
                       strcmp(c->id, st->channel_id) == 0;
+        int in_voice = c->is_voice && st->voice_id[0] &&
+                       strcmp(c->id, st->voice_id) == 0;
         if (idx == st->channel_sel) {
             vita2d_draw_rectangle(4, y, RAIL_W - 8, RAIL_ROW_H,
                                   st->focus == FOCUS_CHANNELS ? COLOR_SELECT
@@ -439,18 +441,31 @@ static void render_channel_rail(const app_state *st)
             if (st->focus == FOCUS_CHANNELS)
                 vita2d_draw_rectangle(4, y, 3, RAIL_ROW_H, COLOR_ACCENT);
         }
-        /* The open channel keeps its accent tick even when the cursor
-           wanders, like Discord's sidebar. */
-        if (is_open)
+        /* The open channel (or the joined voice one) keeps its accent tick
+           even when the cursor wanders, like Discord's sidebar. */
+        if (is_open || in_voice)
             vita2d_draw_rectangle(0, y, 3, RAIL_ROW_H, COLOR_ACCENT);
 
+        int tx = 14;
+        if (c->is_voice) {
+            /* Little speaker glyph so voice channels read at a glance. */
+            unsigned int vc = in_voice ? RGBA8(35, 165, 90, 255)
+                            : idx == st->channel_sel ? COLOR_TEXT
+                                                     : COLOR_TEXT_DIM;
+            vita2d_draw_rectangle(14, y + 11, 4, 8, vc);
+            for (int t = 0; t < 6; t++)
+                vita2d_draw_rectangle(18 + t, y + 11 - t, 1, 8 + 2 * t, vc);
+            tx = 30;
+        }
+
         char row[ST_NAME_LEN + 4];
-        snprintf(row, sizeof(row), "%s%s", is_dm ? "" : "# ", c->name);
-        draw_text_clipped(14, y + 22,
-                          is_open ? COLOR_WHITE
+        snprintf(row, sizeof(row), "%s%s", c->is_voice ? "" : (is_dm ? "" : "# "),
+                 c->name);
+        draw_text_clipped(tx, y + 22,
+                          (is_open || in_voice) ? COLOR_WHITE
                           : idx == st->channel_sel ? COLOR_TEXT
                                                    : COLOR_TEXT_DIM,
-                          RAIL_SCALE, row, RAIL_W - 26);
+                          RAIL_SCALE, row, RAIL_W - tx - 12);
     }
 
     if (st->channel_count == 0)

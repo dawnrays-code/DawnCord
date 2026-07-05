@@ -97,6 +97,9 @@ static int parse_named_list(const char *json, const char *list_key,
         copy_json_id(out[n].id, ST_ID_LEN, item, "id");
         copy_json_str(out[n].name, ST_NAME_LEN, item, "name");
         copy_json_str(out[n].icon, ST_URL_LEN, item, "icon");
+        char type[12];
+        copy_json_str(type, sizeof(type), item, "type");
+        out[n].is_voice = (strcmp(type, "voice") == 0);
         n++;
     }
     *count = n;

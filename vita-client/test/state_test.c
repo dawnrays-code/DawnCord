@@ -46,6 +46,16 @@ int main(void)
         "[{\"id\":\"42\",\"name\":\"generale\",\"type\":\"text\"}]}") == 0,
         "channel list parses");
     check(strcmp(st.channels[0].name, "generale") == 0, "channel name");
+    check(st.channels[0].is_voice == 0, "text channel not flagged voice");
+
+    /* voice channels carry type "voice" */
+    check(state_parse_channels(&st,
+        "{\"guild_id\":\"1\",\"channels\":["
+        "{\"id\":\"5\",\"name\":\"generale\",\"type\":\"text\"},"
+        "{\"id\":\"6\",\"name\":\"Vocale\",\"type\":\"voice\"}]}") == 0,
+        "mixed text/voice channel list parses");
+    check(st.channels[0].is_voice == 0 && st.channels[1].is_voice == 1,
+        "voice channel flagged, text channel not");
 
     /* messages: only accepted for the open channel */
     snprintf(st.channel_id, ST_ID_LEN, "%s", "42");
