@@ -78,15 +78,37 @@ int ui_hit_image(int x, int y, char *url_out, int out_size)
     return 0;
 }
 
+/* vita2d_load_font_file "succeeds" even when the file doesn't exist: the
+   face is only opened lazily at first draw, which then data-aborts inside
+   FreeType (hardware dump: generic_font_draw_text via ui_draw_status).
+   So probe the file ourselves: it must exist and start with a real
+   TTF/OTF magic before vita2d gets to see it. */
+static vita2d_font *try_load_font(const char *path)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f)
+        return NULL;
+    unsigned char magic[4] = {0};
+    size_t n = fread(magic, 1, 4, f);
+    fclose(f);
+    int ok = n == 4 &&
+        ((magic[0] == 0x00 && magic[1] == 0x01 &&
+          magic[2] == 0x00 && magic[3] == 0x00) ||       /* TrueType */
+         memcmp(magic, "OTTO", 4) == 0 ||                /* CFF/OTF  */
+         memcmp(magic, "true", 4) == 0 ||
+         memcmp(magic, "ttcf", 4) == 0);
+    return ok ? vita2d_load_font_file(path) : NULL;
+}
+
 void ui_init(void)
 {
     vita2d_init();
     vita2d_set_clear_color(COLOR_BG);
     /* Font: the user's override first, then the Inter bundled in the VPK,
        and system PGF only if both are missing. */
-    ttf = vita2d_load_font_file("ux0:data/dawncord/font.ttf");
+    ttf = try_load_font("ux0:data/dawncord/font.ttf");
     if (!ttf)
-        ttf = vita2d_load_font_file("app0:font.ttf");
+        ttf = try_load_font("app0:font.ttf");
     font = vita2d_load_default_pgf();
 
     /* Required before any common dialog (IME keyboard) is opened: without

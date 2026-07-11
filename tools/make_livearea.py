@@ -182,8 +182,10 @@ else:
 bg.alpha_composite(rounded(src.resize((64, 64), Image.LANCZOS), 15), (56, 56))
 d.text((137, 53), "DawnCord", font=font(44), fill=(10, 10, 25, 160))  # shadow
 d.text((136, 52), "DawnCord", font=font(44), fill=(255, 255, 255, 255))
-d.text((138, 108), "Discord per PS Vita", font=font(22, bold=False), fill=SUBTLE + (255,))
-d.line([(56, 142), (784, 142)], fill=BLURPLE + (120,), width=2)
+# Subtitle flush with the D of the title; app language is English.
+d.text((136, 108), "Discord for PS Vita", font=font(22, bold=False), fill=SUBTLE + (255,))
+# Divider well clear of the bubble, breathing room hardware-requested.
+d.line([(56, 158), (784, 158)], fill=BLURPLE + (120,), width=2)
 
 # Credit in the bottom strip, on a dark pill so it reads on any artwork,
 # lifted off the bottom edge for the same crop reason.
