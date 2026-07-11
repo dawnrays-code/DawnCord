@@ -154,10 +154,11 @@ int state_parse_channels(app_state *st, const char *json)
         return -1;
     if (st->channel_sel >= st->channel_count)
         st->channel_sel = 0;
-    /* Category rows (id "cat:...") are headers, not selectable: if the
-       initial selection lands on one, advance to the first real channel. */
+    /* Category rows ("cat:") and voice-user rows ("vu:") are display-only:
+       if the initial selection lands on one, advance to a real channel. */
     while (st->channel_sel < st->channel_count &&
-           strncmp(st->channels[st->channel_sel].id, "cat:", 4) == 0)
+           (strncmp(st->channels[st->channel_sel].id, "cat:", 4) == 0 ||
+            strncmp(st->channels[st->channel_sel].id, "vu:", 3) == 0))
         st->channel_sel++;
     if (st->channel_sel >= st->channel_count)
         st->channel_sel = 0;

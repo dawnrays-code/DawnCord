@@ -20,7 +20,7 @@ set(VITA_TITLEID  "DWNC00001")
 # install-over and the LiveArea keeps stale cached assets when it says the
 # same number as the installed build.
 if(NOT VITA_VERSION)
-  set(VITA_VERSION "00.27")
+  set(VITA_VERSION "00.28")
 endif()
 
 # Compile-time defaults; at runtime ux0:data/dawncord/config.txt overrides
@@ -83,4 +83,7 @@ vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
   FILE sce_sys/livearea/contents/bg.png sce_sys/livearea/contents/bg.png
   FILE sce_sys/livearea/contents/startup.png sce_sys/livearea/contents/startup.png
   FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
+  # Inter (OFL, subset): crisp FreeType text instead of scaled bitmap PGF.
+  FILE assets/font.ttf font.ttf
+  FILE assets/font-OFL.txt font-OFL.txt
 )

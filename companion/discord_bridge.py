@@ -185,8 +185,18 @@ class DiscordBridge:
                                  "type": "category"})
             channels.extend({"id": str(c.id), "name": _clean_name(c.name),
                              "type": "text"} for c in texts)
-            channels.extend({"id": str(c.id), "name": _clean_name(c.name),
-                             "type": "voice"} for c in voices)
+            for c in voices:
+                channels.append({"id": str(c.id), "name": _clean_name(c.name),
+                                 "type": "voice"})
+                # Who's connected, as a display-only "vu:" row right under
+                # the channel (the client skips it while navigating).
+                # Refreshed when the channel list is (re)fetched: TRIANGLE.
+                folks = [_clean_name(m.display_name) for m in c.members[:3]]
+                if folks:
+                    extra = len(c.members) - len(folks)
+                    label = ", ".join(folks) + (f" +{extra}" if extra > 0 else "")
+                    channels.append({"id": f"vu:{c.id}", "name": label,
+                                     "type": "voiceusers"})
         return channels
 
     async def get_messages(self, channel_id: int, limit: int = 50,

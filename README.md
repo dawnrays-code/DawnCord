@@ -78,15 +78,17 @@ Working today:
 - [x] Plug and play: the Vita finds the PC by itself, a pairing code keeps
       the rest of your LAN out
 - [x] Companion GUI for Windows (.exe, no Python needed)
+- [x] Crisp TTF text everywhere (Inter bundled); drop your own at
+      `ux0:data/dawncord/font.ttf` to override it
+- [x] Voice channels in the sidebar with who's connected; joining them
+      (listen-only) is in, still experimental
 
 On the way, roughly in order:
 
-- [ ] Custom font: drop a TTF at `ux0:data/dawncord/font.ttf`
+- [ ] Talking back in voice with the Vita's built-in mic
 - [ ] Update check (the client tells you when you're behind)
 - [ ] Animated emoji, stickers (transcoded by the companion)
 - [ ] Emoji in channel names and messages, served as tiny images
-- [ ] Voice chat: ambitious but not crazy with this architecture. The PC
-      handles Opus and UDP, the Vita just plays PCM. One day.
 - [ ] Video and YouTube playback: even mentioning it feels weird, so let's
       call it fantasy tier for now.
 

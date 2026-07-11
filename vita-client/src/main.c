@@ -261,9 +261,11 @@ static int repeat_gate(int held, int *frames)
     return *frames == 1 || (*frames > 18 && *frames % 5 == 0);
 }
 
+/* Rows that exist only to be looked at: category headers and the "vu:"
+   voice-user lines under voice channels. The cursor skips both. */
 static int is_category(const char *id)
 {
-    return strncmp(id, "cat:", 4) == 0;
+    return strncmp(id, "cat:", 4) == 0 || strncmp(id, "vu:", 3) == 0;
 }
 
 static void move_selection(int delta)
@@ -434,11 +436,14 @@ static void handle_input(SceCtrlData *pad, SceCtrlData *prev)
     if (pressed & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER))
         move_focus(1);
 
-    if ((pressed & SCE_CTRL_TRIANGLE) && view == VIEW_WORKSPACE &&
-        st.channel_id[0] != '\0') {
+    if ((pressed & SCE_CTRL_TRIANGLE) && view == VIEW_WORKSPACE) {
         state_set_status(&st, "Refreshing...");
-        request_messages(st.channel_id);
-        request_members(st.channel_id);
+        /* Channels too: it's how the voice-user rows get fresh names. */
+        request_channels(st.guild_id);
+        if (st.channel_id[0] != '\0') {
+            request_messages(st.channel_id);
+            request_members(st.channel_id);
+        }
     }
 
     if ((pressed & SCE_CTRL_START) && view == VIEW_WORKSPACE &&

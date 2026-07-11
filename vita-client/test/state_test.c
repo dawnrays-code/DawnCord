@@ -57,6 +57,16 @@ int main(void)
     check(st.channels[0].is_voice == 0 && st.channels[1].is_voice == 1,
         "voice channel flagged, text channel not");
 
+    /* display-only rows (cat: and vu:) never take the initial selection */
+    check(state_parse_channels(&st,
+        "{\"guild_id\":\"1\",\"channels\":["
+        "{\"id\":\"cat:9\",\"name\":\"Vocali\",\"type\":\"category\"},"
+        "{\"id\":\"vu:6\",\"name\":\"ludo, marco +2\",\"type\":\"voiceusers\"},"
+        "{\"id\":\"6\",\"name\":\"Vocale\",\"type\":\"voice\"}]}") == 0,
+        "list starting with display-only rows parses");
+    check(st.channel_sel == 2,
+        "initial selection skips cat: and vu: rows");
+
     /* messages: only accepted for the open channel */
     snprintf(st.channel_id, ST_ID_LEN, "%s", "42");
     check(state_parse_messages(&st,

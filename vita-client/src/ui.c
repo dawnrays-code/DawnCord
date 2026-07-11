@@ -7,25 +7,27 @@
 #include <stdio.h>
 #include <string.h>
 
-static vita2d_pgf *font = NULL;
+static vita2d_font *ttf = NULL;   /* crisp FreeType TTF (bundled Inter) */
+static vita2d_pgf  *font = NULL;  /* fallback if no TTF loads */
 
-#define HEADER_H    42
+/* All text sizes are in PIXELS now: the TTF renders any size sharply,
+   which is what finally kills the scaled-bitmap-PGF grain. */
+#define HEADER_H    48
 #define ROW_H       30
-#define LINE_H      25
+#define LINE_H      26
 #define FOOTER_H    28
-#define CHAT_SCALE  1.05f
-#define LIST_SCALE  1.0f
+#define CHAT_SCALE  20
+#define LIST_SCALE  19
 #define PAD_X       14
 
 #define AVATAR_SZ   36
 
 /* Workspace: channels | chat | members. The chat column gets whatever the
-   two rails leave (960 - 230 - 190 = 540px). Sizes tuned on hardware:
-   anything below ~0.9 PGF scale reads tiny on the 5" panel. */
+   two rails leave (960 - 230 - 190 = 540px). */
 #define RAIL_W      230
 #define MEMBERS_W   190
 #define RAIL_ROW_H  30
-#define RAIL_SCALE  0.95f
+#define RAIL_SCALE  18
 
 #define WRAP_MAX_LINES 12
 #define WRAP_LINE_LEN  256
@@ -42,9 +44,27 @@ typedef struct {
     char url[IMG_KEY_LEN];
 } hit_rect;
 
-#define HIT_MAX 12
+#define HIT_MAX 24
 static hit_rect hits[HIT_MAX];
 static int hit_count = 0;
+
+/* All text goes through these two. Size is in pixels: with the TTF loaded
+   (bundled in the VPK, or the user's ux0:data/dawncord/font.ttf) text is
+   FreeType-crisp at any size; without it, scaled PGF as before. */
+static void ui_text(int x, int y, unsigned int color, int px, const char *s)
+{
+    if (ttf)
+        vita2d_font_draw_text(ttf, x, y, color, px, s);
+    else
+        vita2d_pgf_draw_text(font, x, y, color, px / 19.0f, s);
+}
+
+static int ui_text_width(int px, const char *s)
+{
+    if (ttf)
+        return vita2d_font_text_width(ttf, px, s);
+    return vita2d_pgf_text_width(font, px / 19.0f, s);
+}
 
 int ui_hit_image(int x, int y, char *url_out, int out_size)
 {
@@ -62,6 +82,11 @@ void ui_init(void)
 {
     vita2d_init();
     vita2d_set_clear_color(COLOR_BG);
+    /* Font: the user's override first, then the Inter bundled in the VPK,
+       and system PGF only if both are missing. */
+    ttf = vita2d_load_font_file("ux0:data/dawncord/font.ttf");
+    if (!ttf)
+        ttf = vita2d_load_font_file("app0:font.ttf");
     font = vita2d_load_default_pgf();
 
     /* Required before any common dialog (IME keyboard) is opened: without
@@ -75,6 +100,8 @@ void ui_init(void)
 void ui_term(void)
 {
     img_clear();
+    if (ttf)
+        vita2d_free_font(ttf);
     if (font)
         vita2d_free_pgf(font);
     vita2d_fini();
@@ -97,9 +124,9 @@ static void frame_end(void)
 void ui_draw_status(const char *text)
 {
     frame_begin();
-    int w = vita2d_pgf_text_width(font, 1.0f, text);
-    vita2d_pgf_draw_text(font, (SCREEN_W - w) / 2, SCREEN_H / 2,
-                         COLOR_TEXT, 1.0f, text);
+    int w = ui_text_width(20, text);
+    ui_text((SCREEN_W - w) / 2, SCREEN_H / 2,
+                         COLOR_TEXT, 20, text);
     frame_end();
 }
 
@@ -139,10 +166,10 @@ static void draw_avatar(int x, int y, int size, const char *url, const char *nam
     vita2d_draw_fill_circle(x + size / 2.0f, y + size / 2.0f, size / 2.0f,
                             name_color(name));
     char initial[2] = { name[0] ? name[0] : '?', '\0' };
-    float scale = size >= AVATAR_SZ ? 0.9f : 0.75f;
-    int w = vita2d_pgf_text_width(font, scale, initial);
-    vita2d_pgf_draw_text(font, x + (size - w) / 2, y + size / 2 + (int)(9 * scale),
-                         RGBA8(30, 31, 34, 255), scale, initial);
+    int px = size >= AVATAR_SZ ? 17 : 14;
+    int w = ui_text_width(px, initial);
+    ui_text(x + (size - w) / 2, y + size / 2 + px * 2 / 5,
+            RGBA8(30, 31, 34, 255), px, initial);
 }
 
 static void draw_box(int x, int y, int w, int h, unsigned int color)
@@ -173,7 +200,7 @@ static void draw_battery(void)
         return;   /* devkit / no battery info */
     int charging = scePowerIsBatteryCharging();
 
-    int x = SCREEN_W - PAD_X - 29, y = 14;
+    int x = SCREEN_W - PAD_X - 29, y = 17;
     unsigned int col = charging ? COLOR_ACCENT
                      : pct <= 20 ? COLOR_ERROR
                                  : RGBA8(87, 242, 135, 255);
@@ -185,19 +212,19 @@ static void draw_battery(void)
 
     char t[8];
     snprintf(t, sizeof(t), "%d", pct);
-    int tw = vita2d_pgf_text_width(font, 0.65f, t);
-    vita2d_pgf_draw_text(font, x - 6 - tw, y + 11, COLOR_TEXT_DIM, 0.65f, t);
+    int tw = ui_text_width(12, t);
+    ui_text(x - 6 - tw, y + 11, COLOR_TEXT_DIM, 12, t);
 }
 
 static void draw_header(const char *title, const char *right)
 {
     vita2d_draw_rectangle(0, 0, SCREEN_W, HEADER_H, COLOR_HEADER);
-    vita2d_pgf_draw_text(font, PAD_X, 28, COLOR_WHITE, 1.0f, title);
+    vita2d_draw_rectangle(0, HEADER_H - 1, SCREEN_W, 1, COLOR_BORDER);
+    ui_text(PAD_X, 32, COLOR_WHITE, 22, title);
     if (right && right[0]) {
         /* Leave room for the battery widget on the far right. */
-        int w = vita2d_pgf_text_width(font, 0.8f, right);
-        vita2d_pgf_draw_text(font, SCREEN_W - PAD_X - 68 - w, 28,
-                             COLOR_TEXT_DIM, 0.8f, right);
+        int w = ui_text_width(15, right);
+        ui_text(SCREEN_W - PAD_X - 68 - w, 31, COLOR_TEXT_DIM, 15, right);
     }
     draw_battery();
 }
@@ -205,7 +232,7 @@ static void draw_header(const char *title, const char *right)
 static void draw_footer(const char *hints, const char *status)
 {
     vita2d_draw_rectangle(0, SCREEN_H - FOOTER_H, SCREEN_W, FOOTER_H, COLOR_HEADER);
-    vita2d_pgf_draw_text(font, PAD_X, SCREEN_H - 8, COLOR_TEXT_DIM, 0.75f, hints);
+    ui_text(PAD_X, SCREEN_H - 8, COLOR_TEXT_DIM, 14, hints);
     if (status && status[0]) {
         /* Leading '!' marks a warning: drawn in red so it can't be missed. */
         unsigned int color = COLOR_ACCENT;
@@ -213,9 +240,9 @@ static void draw_footer(const char *hints, const char *status)
             color = COLOR_ERROR;
             status++;
         }
-        int w = vita2d_pgf_text_width(font, 0.75f, status);
-        vita2d_pgf_draw_text(font, SCREEN_W - PAD_X - w, SCREEN_H - 8,
-                             color, 0.75f, status);
+        int w = ui_text_width(14, status);
+        ui_text(SCREEN_W - PAD_X - w, SCREEN_H - 8,
+                             color, 14, status);
     }
 }
 
@@ -232,11 +259,11 @@ static const char *status_line(const app_state *st)
 
 /* Draw text truncated at UTF-8 boundaries so it never bleeds out of its
    column. Rails are narrow; an ellipsis would just eat pixels. */
-static void draw_text_clipped(int x, int y, unsigned int color, float scale,
+static void draw_text_clipped(int x, int y, unsigned int color, int scale,
                               const char *text, int max_w)
 {
-    if (vita2d_pgf_text_width(font, scale, text) <= max_w) {
-        vita2d_pgf_draw_text(font, x, y, color, scale, text);
+    if (ui_text_width(scale, text) <= max_w) {
+        ui_text(x, y, color, scale, text);
         return;
     }
     char buf[WRAP_LINE_LEN];
@@ -247,10 +274,10 @@ static void draw_text_clipped(int x, int y, unsigned int color, float scale,
             len--;
         } while (len > 0 && ((unsigned char)buf[len] & 0xC0) == 0x80);
         buf[len] = '\0';
-        if (vita2d_pgf_text_width(font, scale, buf) <= max_w)
+        if (ui_text_width(scale, buf) <= max_w)
             break;
     }
-    vita2d_pgf_draw_text(font, x, y, color, scale, buf);
+    ui_text(x, y, color, scale, buf);
 }
 
 /* Scrolling list of named entries with a selection bar. Entries with an
@@ -282,7 +309,7 @@ static void draw_list(const st_named *items, int count, int sel, const char *pre
 
         /* Category header rows: dim label, no prefix, no highlight. */
         if (strncmp(items[idx].id, "cat:", 4) == 0) {
-            vita2d_pgf_draw_text(font, PAD_X + 4, y + 22, COLOR_TEXT_DIM,
+            ui_text(PAD_X + 4, y + 22, COLOR_TEXT_DIM,
                                  0.75f, items[idx].name);
             continue;
         }
@@ -298,13 +325,13 @@ static void draw_list(const st_named *items, int count, int sel, const char *pre
 
         char row[ST_NAME_LEN + 4];
         snprintf(row, sizeof(row), "%s%s", prefix, items[idx].name);
-        vita2d_pgf_draw_text(font, text_x, y + 22,
+        ui_text(text_x, y + 22,
                              idx == sel ? COLOR_WHITE : COLOR_TEXT,
                              LIST_SCALE, row);
     }
 
     if (count == 0)
-        vita2d_pgf_draw_text(font, PAD_X, top + 24, COLOR_TEXT_DIM, 0.9f,
+        ui_text(PAD_X, top + 24, COLOR_TEXT_DIM, 17,
                              "Nothing here yet...");
 }
 
@@ -312,7 +339,7 @@ static void draw_list(const st_named *items, int count, int sel, const char *pre
 
 /* Break a UTF-8 string so no chunk is wider than max_w. Greedy on spaces;
    words wider than a whole line are hard-split at UTF-8 boundaries. */
-static int wrap_text(const char *text, float scale, int max_w,
+static int wrap_text(const char *text, int scale, int max_w,
                      char out[][WRAP_LINE_LEN], int max_lines)
 {
     int nlines = 0;
@@ -340,7 +367,7 @@ static int wrap_text(const char *text, float scale, int max_w,
         char candidate[WRAP_LINE_LEN];
         snprintf(candidate, sizeof(candidate), "%s%.*s", line, tok_len, p);
 
-        if (vita2d_pgf_text_width(font, scale, candidate) <= max_w) {
+        if (ui_text_width(scale, candidate) <= max_w) {
             snprintf(line, sizeof(line), "%s", candidate);
             p = tok_end;
             continue;
@@ -362,7 +389,7 @@ static int wrap_text(const char *text, float scale, int max_w,
                 continue;  /* mid-sequence: not a valid split point */
             char probe[WRAP_LINE_LEN];
             snprintf(probe, sizeof(probe), "%.*s", i, p);
-            if (vita2d_pgf_text_width(font, scale, probe) > max_w)
+            if (ui_text_width(scale, probe) > max_w)
                 break;
             fit = i;
         }
@@ -399,11 +426,11 @@ static void render_channel_rail(const app_state *st)
         vita2d_draw_rectangle(0, py, RAIL_W, PROFILE_H, COLOR_HEADER);
         vita2d_draw_rectangle(0, py, RAIL_W, 2, COLOR_BORDER);
         draw_avatar(10, py + 10, 36, st->self_avatar, st->self_name);
-        draw_text_clipped(56, py + 24, COLOR_WHITE, 0.85f,
+        draw_text_clipped(56, py + 24, COLOR_WHITE, 16,
                           st->self_name, RAIL_W - 66);
         vita2d_draw_fill_circle(61.0f, (float)(py + 38), 4.0f,
                                 RGBA8(35, 165, 90, 255));
-        vita2d_pgf_draw_text(font, 70, py + 43, COLOR_TEXT_DIM, 0.65f,
+        ui_text(70, py + 43, COLOR_TEXT_DIM, 12,
                              "online");
         bottom = py;
     }
@@ -425,8 +452,15 @@ static void render_channel_rail(const app_state *st)
         const st_named *c = &st->channels[idx];
 
         if (strncmp(c->id, "cat:", 4) == 0) {
-            draw_text_clipped(10, y + 21, COLOR_TEXT_DIM, 0.7f,
+            draw_text_clipped(10, y + 21, COLOR_TEXT_DIM, 13,
                               c->name, RAIL_W - 20);
+            continue;
+        }
+        /* "vu:" rows are who's connected to the voice channel right above,
+           indented and small like Discord's sidebar. */
+        if (strncmp(c->id, "vu:", 3) == 0) {
+            draw_text_clipped(34, y + 20, COLOR_TEXT_DIM, 13,
+                              c->name, RAIL_W - 44);
             continue;
         }
 
@@ -469,7 +503,7 @@ static void render_channel_rail(const app_state *st)
     }
 
     if (st->channel_count == 0)
-        vita2d_pgf_draw_text(font, 12, top + 28, COLOR_TEXT_DIM, 0.75f,
+        ui_text(12, top + 28, COLOR_TEXT_DIM, 14,
                              "Loading...");
 }
 
@@ -485,7 +519,7 @@ static void render_member_rail(const app_state *st)
 
     char hdr[32];
     snprintf(hdr, sizeof(hdr), "Members - %d", st->member_count);
-    vita2d_pgf_draw_text(font, x + 12, top + 24, COLOR_TEXT_DIM, 0.75f, hdr);
+    ui_text(x + 12, top + 24, COLOR_TEXT_DIM, 14, hdr);
 
     int list_top = top + 34;
     int visible = (bottom - list_top - 4) / RAIL_ROW_H;
@@ -505,7 +539,7 @@ static void render_member_rail(const app_state *st)
     }
 
     if (st->channel_id[0] && st->member_count == 0)
-        vita2d_pgf_draw_text(font, x + 12, list_top + 20, COLOR_TEXT_DIM,
+        ui_text(x + 12, list_top + 20, COLOR_TEXT_DIM,
                              0.7f, "Nobody visible");
 }
 
@@ -517,10 +551,10 @@ static void render_chat_pane(const app_state *st)
         vita2d_draw_rectangle(x0, HEADER_H, x1 - x0, 2, COLOR_ACCENT);
 
     if (st->channel_id[0] == '\0') {
-        vita2d_pgf_draw_text(font, x0 + 24, HEADER_H + 48, COLOR_TEXT_DIM,
+        ui_text(x0 + 24, HEADER_H + 48, COLOR_TEXT_DIM,
                              0.9f, "Pick a channel on the left,");
-        vita2d_pgf_draw_text(font, x0 + 24, HEADER_H + 48 + LINE_H + 4,
-                             COLOR_TEXT_DIM, 0.9f, "X opens it here.");
+        ui_text(x0 + 24, HEADER_H + 48 + LINE_H + 4,
+                             COLOR_TEXT_DIM, 17, "X opens it here.");
         return;
     }
 
@@ -532,9 +566,9 @@ static void render_chat_pane(const app_state *st)
     /* Scroll-back feedback pinned under the title bar. */
     if (st->history_pending) {
         const char *msg = "Loading older messages...";
-        int w = vita2d_pgf_text_width(font, 0.8f, msg);
-        vita2d_pgf_draw_text(font, x0 + (x1 - x0 - w) / 2, HEADER_H + 18,
-                             COLOR_ACCENT, 0.8f, msg);
+        int w = ui_text_width(15, msg);
+        ui_text(x0 + (x1 - x0 - w) / 2, HEADER_H + 18,
+                             COLOR_ACCENT, 15, msg);
     } else if (st->history_done && st->message_count > 0 &&
                st->chat_scroll >= st->message_count - 1) {
         /* Honest label: a fresh channel top is one thing, a companion too
@@ -542,8 +576,8 @@ static void render_chat_pane(const app_state *st)
         const char *msg = st->companion_old
             ? "Companion outdated: can't load older messages"
             : "Beginning of history";
-        int w = vita2d_pgf_text_width(font, 0.8f, msg);
-        vita2d_pgf_draw_text(font, x0 + (x1 - x0 - w) / 2, HEADER_H + 18,
+        int w = ui_text_width(15, msg);
+        ui_text(x0 + (x1 - x0 - w) / 2, HEADER_H + 18,
                              st->companion_old ? COLOR_ERROR : COLOR_TEXT_DIM,
                              0.8f, msg);
     }
@@ -594,7 +628,7 @@ static void render_chat_pane(const app_state *st)
         for (int e = 0; e < m->embed_count; e++) {
             const st_embed *em = &m->embeds[e];
             en[e] = em->desc[0]
-                ? wrap_text(em->desc, 0.85f, emb_w - 26, elines[e], 3) : 0;
+                ? wrap_text(em->desc, 16, emb_w - 26, elines[e], 3) : 0;
             eh[e] = 8 + (em->title[0] ? LINE_H : 0) + en[e] * LINE_H + 6;
             embeds_h += eh[e] + 6;
         }
@@ -611,18 +645,27 @@ static void render_chat_pane(const app_state *st)
            v0.17 era). Content lines have their own per-line guard below. */
         if (starts_group && y + 4 >= HEADER_H) {
             draw_avatar(avatar_x, y + 4, AVATAR_SZ, m->avatar, m->author);
-            vita2d_pgf_draw_text(font, text_x, y + LINE_H - 2,
+            /* Avatars are tappable too: they open full-size in the viewer. */
+            if (m->avatar[0] && hit_count < HIT_MAX) {
+                hit_rect *hr = &hits[hit_count++];
+                hr->x = avatar_x;
+                hr->y = y + 4;
+                hr->w = AVATAR_SZ;
+                hr->h = AVATAR_SZ;
+                snprintf(hr->url, sizeof(hr->url), "%s", m->avatar);
+            }
+            ui_text(text_x, y + LINE_H - 2,
                                  name_color(m->author), CHAT_SCALE, m->author);
             if (m->time[0]) {
-                int aw = vita2d_pgf_text_width(font, CHAT_SCALE, m->author);
-                vita2d_pgf_draw_text(font, text_x + aw + 10, y + LINE_H - 2,
-                                     COLOR_TEXT_DIM, 0.75f, m->time);
+                int aw = ui_text_width(CHAT_SCALE, m->author);
+                ui_text(text_x + aw + 10, y + LINE_H - 2,
+                                     COLOR_TEXT_DIM, 14, m->time);
             }
         }
         for (int l = 0; l < nlines; l++) {
             int ly = content_top + (l + 1) * LINE_H - 4;
             if (ly > HEADER_H + LINE_H && ly < input_top)
-                vita2d_pgf_draw_text(font, text_x, ly, COLOR_TEXT,
+                ui_text(text_x, ly, COLOR_TEXT,
                                      CHAT_SCALE, lines[l]);
         }
 
@@ -639,12 +682,12 @@ static void render_chat_pane(const app_state *st)
                 vita2d_draw_rectangle(text_x, below_y, 4, eh[e], bar);
                 int ty = below_y + LINE_H;
                 if (em->title[0]) {
-                    draw_text_clipped(text_x + 14, ty, COLOR_WHITE, 0.9f,
+                    draw_text_clipped(text_x + 14, ty, COLOR_WHITE, 17,
                                       em->title, emb_w - 26);
                     ty += LINE_H;
                 }
                 for (int l = 0; l < en[e]; l++) {
-                    vita2d_pgf_draw_text(font, text_x + 14, ty, COLOR_TEXT,
+                    ui_text(text_x + 14, ty, COLOR_TEXT,
                                          0.85f, elines[e][l]);
                     ty += LINE_H;
                 }
@@ -677,9 +720,9 @@ static void render_chat_pane(const app_state *st)
                 } else {
                     vita2d_draw_rectangle(text_x, iy, thumb_w, thumb_h,
                                           COLOR_INPUT_BG);
-                    vita2d_pgf_draw_text(font, text_x + 12,
+                    ui_text(text_x + 12,
                                          iy + thumb_h / 2 + 6,
-                                         COLOR_TEXT_DIM, 0.75f, "image...");
+                                         COLOR_TEXT_DIM, 14, "image...");
                 }
                 draw_box(text_x - 2, iy - 2, thumb_w + 4, thumb_h + 4,
                          COLOR_BORDER);
@@ -697,14 +740,14 @@ static void render_chat_pane(const app_state *st)
     }
 
     if (st->message_count == 0)
-        vita2d_pgf_draw_text(font, x0 + PAD_X, HEADER_H + 30, COLOR_TEXT_DIM,
+        ui_text(x0 + PAD_X, HEADER_H + 30, COLOR_TEXT_DIM,
                              0.9f, "No messages loaded.");
 
     if (typing) {
         char tline[ST_AUTHOR_LEN + 24];
         snprintf(tline, sizeof(tline), "%s is typing...", st->typing_name);
-        vita2d_pgf_draw_text(font, x0 + PAD_X + 4, input_top - 6,
-                             COLOR_TEXT_DIM, 0.7f, tline);
+        ui_text(x0 + PAD_X + 4, input_top - 6,
+                             COLOR_TEXT_DIM, 13, tline);
     }
 
     /* Input bar: squared with a visible border, the old-VitaCord look. */
@@ -714,11 +757,11 @@ static void render_chat_pane(const app_state *st)
         char more[48];
         snprintf(more, sizeof(more), "v %d newer below - DOWN to return",
                  st->chat_scroll);
-        vita2d_pgf_draw_text(font, x0 + PAD_X + 4, input_top + 22, COLOR_ACCENT,
+        ui_text(x0 + PAD_X + 4, input_top + 22, COLOR_ACCENT,
                              0.85f, more);
     } else {
-        vita2d_pgf_draw_text(font, x0 + PAD_X + 4, input_top + 22,
-                             COLOR_TEXT_DIM, 0.85f, "START to write");
+        ui_text(x0 + PAD_X + 4, input_top + 22,
+                             COLOR_TEXT_DIM, 16, "START to write");
     }
 }
 
@@ -774,14 +817,14 @@ void ui_render(const app_state *st, dawncord_view view)
                                       (SCREEN_H - th * s) / 2.0f, s, s);
         } else {
             const char *msg = "Loading image...";
-            int w = vita2d_pgf_text_width(font, 1.0f, msg);
-            vita2d_pgf_draw_text(font, (SCREEN_W - w) / 2, SCREEN_H / 2,
-                                 COLOR_TEXT, 1.0f, msg);
+            int w = ui_text_width(20, msg);
+            ui_text((SCREEN_W - w) / 2, SCREEN_H / 2,
+                                 COLOR_TEXT, 20, msg);
         }
         const char *hint = "O / tap to close";
-        int hw = vita2d_pgf_text_width(font, 0.8f, hint);
-        vita2d_pgf_draw_text(font, (SCREEN_W - hw) / 2, SCREEN_H - 10,
-                             COLOR_TEXT_DIM, 0.8f, hint);
+        int hw = ui_text_width(15, hint);
+        ui_text((SCREEN_W - hw) / 2, SCREEN_H - 10,
+                             COLOR_TEXT_DIM, 15, hint);
     }
     frame_end();
 }
