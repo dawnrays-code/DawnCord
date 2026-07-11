@@ -117,6 +117,11 @@ int voice_start(void)
         audio_port = -1;
         return -2;   /* socket */
     }
+    /* Fast leave/rejoin reuses the port before the old socket fully dies:
+       without REUSEADDR the bind fails ("Voice: network error"). */
+    int reuse = 1;
+    sceNetSetsockopt(udp_sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_REUSEADDR,
+                     &reuse, sizeof(reuse));
     SceNetSockaddrIn addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = SCE_NET_AF_INET;
