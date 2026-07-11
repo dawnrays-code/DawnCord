@@ -7,8 +7,27 @@
 #include <stdio.h>
 #include <string.h>
 
-static vita2d_font *ttf = NULL;   /* crisp FreeType TTF (bundled Inter) */
-static vita2d_pgf  *font = NULL;  /* fallback if no TTF loads */
+/* vita2d rasterizes each glyph ONCE, at the first size it's drawn at, and
+   rescales that bitmap forever after (its atlas is keyed by glyph only).
+   Ten different text sizes through one handle = blurry rescales and glyph
+   drops everywhere (hardware screenshots: overlapping letters, truncated
+   names). So: one font handle PER SIZE, five consolidated sizes, each
+   atlas holding pixel-exact glyphs, pre-warmed at init so no atlas is
+   ever touched mid-frame. */
+#define FONT_SIZES 5
+static const int font_px[FONT_SIZES] = { 13, 15, 18, 20, 22 };
+static vita2d_font *ttf_h[FONT_SIZES];
+static int ttf_ok = 0;            /* all handles loaded */
+static vita2d_pgf *font = NULL;   /* fallback if the TTF doesn't load */
+
+static int px_slot(int px)
+{
+    if (px <= 13) return 0;
+    if (px <= 16) return 1;
+    if (px <= 18) return 2;
+    if (px <= 21) return 3;
+    return 4;
+}
 
 /* All text sizes are in PIXELS now: the TTF renders any size sharply,
    which is what finally kills the scaled-bitmap-PGF grain. */
@@ -48,21 +67,22 @@ typedef struct {
 static hit_rect hits[HIT_MAX];
 static int hit_count = 0;
 
-/* All text goes through these two. Size is in pixels: with the TTF loaded
-   (bundled in the VPK, or the user's ux0:data/dawncord/font.ttf) text is
-   FreeType-crisp at any size; without it, scaled PGF as before. */
+/* All text goes through these two. Size in pixels, snapped to the closest
+   of the five handles so every glyph draws at its native raster size. */
 static void ui_text(int x, int y, unsigned int color, int px, const char *s)
 {
-    if (ttf)
-        vita2d_font_draw_text(ttf, x, y, color, px, s);
+    int slot = px_slot(px);
+    if (ttf_ok)
+        vita2d_font_draw_text(ttf_h[slot], x, y, color, font_px[slot], s);
     else
         vita2d_pgf_draw_text(font, x, y, color, px / 19.0f, s);
 }
 
 static int ui_text_width(int px, const char *s)
 {
-    if (ttf)
-        return vita2d_font_text_width(ttf, px, s);
+    int slot = px_slot(px);
+    if (ttf_ok)
+        return vita2d_font_text_width(ttf_h[slot], font_px[slot], s);
     return vita2d_pgf_text_width(font, px / 19.0f, s);
 }
 
@@ -104,11 +124,38 @@ void ui_init(void)
 {
     vita2d_init();
     vita2d_set_clear_color(COLOR_BG);
+
     /* Font: the user's override first, then the Inter bundled in the VPK,
-       and system PGF only if both are missing. */
-    ttf = try_load_font("ux0:data/dawncord/font.ttf");
-    if (!ttf)
-        ttf = try_load_font("app0:font.ttf");
+       and system PGF only if neither loads. One handle per size. */
+    const char *font_path = "ux0:data/dawncord/font.ttf";
+    {
+        FILE *probe = fopen(font_path, "rb");
+        if (probe)
+            fclose(probe);
+        else
+            font_path = "app0:font.ttf";
+    }
+    ttf_ok = 1;
+    for (int i = 0; i < FONT_SIZES; i++) {
+        ttf_h[i] = try_load_font(font_path);
+        if (!ttf_h[i])
+            ttf_ok = 0;
+    }
+
+    /* Pre-warm every atlas with the charset people actually type: the
+       width path fills the atlas without drawing, so it's safe outside a
+       frame, and no glyph upload ever happens mid-frame again. */
+    if (ttf_ok) {
+        static const char warm[] =
+            " !\"#$%&'()*+,-./0123456789:;<=>?@"
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`"
+            "abcdefghijklmnopqrstuvwxyz{|}~"
+            "àèéìíòóùú"
+            "ÀÈÉÌÒÙ«»…€";
+        for (int i = 0; i < FONT_SIZES; i++)
+            vita2d_font_text_width(ttf_h[i], font_px[i], warm);
+    }
+
     font = vita2d_load_default_pgf();
 
     /* Required before any common dialog (IME keyboard) is opened: without
@@ -122,8 +169,12 @@ void ui_init(void)
 void ui_term(void)
 {
     img_clear();
-    if (ttf)
-        vita2d_free_font(ttf);
+    for (int i = 0; i < FONT_SIZES; i++) {
+        if (ttf_h[i]) {
+            vita2d_free_font(ttf_h[i]);
+            ttf_h[i] = NULL;
+        }
+    }
     if (font)
         vita2d_free_pgf(font);
     vita2d_fini();
@@ -234,8 +285,9 @@ static void draw_battery(void)
 
     char t[8];
     snprintf(t, sizeof(t), "%d", pct);
-    int tw = ui_text_width(12, t);
-    ui_text(x - 6 - tw, y + 11, COLOR_TEXT_DIM, 12, t);
+    int tw = ui_text_width(13, t);
+    /* Same baseline as the header's right-hand text: aligned, not floating. */
+    ui_text(x - 6 - tw, 31, COLOR_TEXT_DIM, 13, t);
 }
 
 static void draw_header(const char *title, const char *right)
@@ -478,11 +530,13 @@ static void render_channel_rail(const app_state *st)
                               c->name, RAIL_W - 20);
             continue;
         }
-        /* "vu:" rows are who's connected to the voice channel right above,
-           indented and small like Discord's sidebar. */
+        /* "vu:" rows: one connected user each, indented under their voice
+           channel with a little presence dot, like Discord's sidebar. */
         if (strncmp(c->id, "vu:", 3) == 0) {
-            draw_text_clipped(34, y + 20, COLOR_TEXT_DIM, 13,
-                              c->name, RAIL_W - 44);
+            vita2d_draw_fill_circle(38.0f, (float)(y + 15), 3.0f,
+                                    RGBA8(35, 165, 90, 255));
+            draw_text_clipped(48, y + 20, COLOR_TEXT_DIM, 15,
+                              c->name, RAIL_W - 58);
             continue;
         }
 
@@ -567,7 +621,11 @@ static void render_member_rail(const app_state *st)
 
 static void render_chat_pane(const app_state *st)
 {
-    int x0 = RAIL_W, x1 = SCREEN_W - MEMBERS_W;
+    /* The member rail only exists while a channel is open: browsing, the
+       chat pane takes the full width (author's call: three columns at all
+       times crowd a 5-inch screen). */
+    int x0 = RAIL_W;
+    int x1 = st->channel_id[0] ? SCREEN_W - MEMBERS_W : SCREEN_W;
     hit_count = 0;
     if (st->focus == FOCUS_CHAT)
         vita2d_draw_rectangle(x0, HEADER_H, x1 - x0, 2, COLOR_ACCENT);
@@ -810,7 +868,8 @@ static void render_workspace(const app_state *st)
 
     render_channel_rail(st);
     render_chat_pane(st);
-    render_member_rail(st);
+    if (st->channel_id[0])
+        render_member_rail(st);
 
     draw_footer(workspace_hints(st), status_line(st));
 }

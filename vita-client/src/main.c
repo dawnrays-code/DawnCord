@@ -308,9 +308,11 @@ static void move_focus(int delta)
 {
     if (view != VIEW_WORKSPACE)
         return;
+    /* No member rail while no channel is open: focus stops at the chat. */
+    int max_focus = st.channel_id[0] ? FOCUS_MEMBERS : FOCUS_CHAT;
     st.focus += delta;
     if (st.focus < FOCUS_CHANNELS) st.focus = FOCUS_CHANNELS;
-    if (st.focus > FOCUS_MEMBERS)  st.focus = FOCUS_MEMBERS;
+    if (st.focus > max_focus)      st.focus = max_focus;
 }
 
 static void open_channel(const st_named *c)
