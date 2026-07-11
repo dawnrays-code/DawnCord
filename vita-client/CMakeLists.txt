@@ -67,6 +67,7 @@ target_link_libraries(${PROJECT_NAME}
   SceAudio_stub
   SceAppMgr_stub
   freetype
+  bz2
   png
   jpeg
   z
