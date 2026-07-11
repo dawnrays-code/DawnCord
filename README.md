@@ -43,7 +43,7 @@ I hope you can try it out and let me know if it works.
 
 ## Do I need a lot of free space to install the app?
 
-No! The .vpk is only ~200 kilobytes.
+No! The .vpk is under 1 MB.
 
 ![hello i am 200kilobyte i am tiny](docs/tiny.jpg)
 
