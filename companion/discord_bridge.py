@@ -188,14 +188,18 @@ class DiscordBridge:
             for c in voices:
                 channels.append({"id": str(c.id), "name": _clean_name(c.name),
                                  "type": "voice"})
-                # Who's connected, as a display-only "vu:" row right under
-                # the channel (the client skips it while navigating).
-                # Refreshed when the channel list is (re)fetched: TRIANGLE.
-                folks = [_clean_name(m.display_name) for m in c.members[:3]]
-                if folks:
-                    extra = len(c.members) - len(folks)
-                    label = ", ".join(folks) + (f" +{extra}" if extra > 0 else "")
-                    channels.append({"id": f"vu:{c.id}", "name": label,
+                # Who's connected: one display-only "vu:" row per user,
+                # stacked under the channel like Discord's sidebar (the
+                # client skips them while navigating). Refreshed whenever
+                # the channel list is fetched: TRIANGLE on the console.
+                members = c.members
+                for n, m in enumerate(members[:5]):
+                    channels.append({"id": f"vu:{c.id}:{n}",
+                                     "name": _clean_name(m.display_name),
+                                     "type": "voiceusers"})
+                if len(members) > 5:
+                    channels.append({"id": f"vu:{c.id}:more",
+                                     "name": f"+{len(members) - 5} more",
                                      "type": "voiceusers"})
         return channels
 

@@ -177,15 +177,16 @@ else:
     sil.alpha_composite(dark_clyde, (356, 368))
     bg.alpha_composite(sil)
 
-# Header strip: small bubble + title + subtitle, above the gate area but
-# clear of the top edge the console crops away (~40px of safe margin).
-bg.alpha_composite(rounded(src.resize((64, 64), Image.LANCZOS), 15), (56, 56))
-d.text((137, 53), "DawnCord", font=font(44), fill=(10, 10, 25, 160))  # shadow
-d.text((136, 52), "DawnCord", font=font(44), fill=(255, 255, 255, 255))
-# Subtitle flush with the D of the title; app language is English.
-d.text((136, 108), "Discord for PS Vita", font=font(22, bold=False), fill=SUBTLE + (255,))
-# Divider well clear of the bubble, breathing room hardware-requested.
-d.line([(56, 158), (784, 158)], fill=BLURPLE + (120,), width=2)
+# Title block: compact, left column, BELOW the console's floating system
+# icons (browser/update/plus overlay the top-center down to ~bg y 125) and
+# entirely clear of the gate frame (bg x ~274-590, y ~167+). Hardware
+# lesson: anything crossing those regions reads as clutter.
+bg.alpha_composite(rounded(src.resize((46, 46), Image.LANCZOS), 11), (56, 120))
+d.text((113, 125), "DawnCord", font=font(34), fill=(10, 10, 25, 160))  # shadow
+d.text((112, 124), "DawnCord", font=font(34), fill=(255, 255, 255, 255))
+d.text((113, 166), "Discord for PS Vita", font=font(18, bold=False), fill=SUBTLE + (255,))
+# Short divider, stops well before the gate.
+d.line([(56, 198), (264, 198)], fill=BLURPLE + (150,), width=2)
 
 # Credit in the bottom strip, on a dark pill so it reads on any artwork,
 # lifted off the bottom edge for the same crop reason.
