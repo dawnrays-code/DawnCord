@@ -205,6 +205,36 @@ void ui_draw_status(const char *text)
     frame_end();
 }
 
+void ui_draw_loading(const char *title, const char *subtitle, int frame)
+{
+    /* Eight dots on a circle; the bright "head" rotates, the rest trail
+       off, so it reads as a spinner without any trig at draw time. */
+    static const float cx8[8] = { 1.0f, 0.707f, 0.0f, -0.707f,
+                                  -1.0f, -0.707f, 0.0f, 0.707f };
+    static const float cy8[8] = { 0.0f, 0.707f, 1.0f, 0.707f,
+                                  0.0f, -0.707f, -1.0f, -0.707f };
+    float ccx = SCREEN_W / 2.0f, ccy = SCREEN_H / 2.0f - 34;
+
+    frame_begin();
+    int lead = (frame / 4) % 8;
+    for (int i = 0; i < 8; i++) {
+        int dist = (lead - i + 8) % 8;      /* 0 = the bright head */
+        int a = 32 + (7 - dist) * 30;
+        if (a > 255) a = 255;
+        vita2d_draw_fill_circle(ccx + cx8[i] * 26.0f, ccy + cy8[i] * 26.0f,
+                                4.5f, RGBA8(88, 101, 242, a));
+    }
+    if (title && title[0]) {
+        int w = ui_text_width(20, title);
+        ui_text((SCREEN_W - w) / 2, (int)ccy + 62, COLOR_TEXT, 20, title);
+    }
+    if (subtitle && subtitle[0]) {
+        int w = ui_text_width(15, subtitle);
+        ui_text((SCREEN_W - w) / 2, (int)ccy + 90, COLOR_TEXT_DIM, 15, subtitle);
+    }
+    frame_end();
+}
+
 /* ---- avatars & icons ---- */
 
 /* Stable per-name color, used for placeholder tiles and author names

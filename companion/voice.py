@@ -16,6 +16,8 @@ import asyncio
 import audioop
 import logging
 import socket
+import struct
+import time
 
 import discord
 from discord.ext import voice_recv
@@ -26,7 +28,13 @@ VOICE_UDP_PORT = 9102          # where the Vita listens for PCM
 SAMPLE_RATE = 48000            # discord voice is always 48 kHz
 FRAME_MS = 20                  # voice_recv delivers 20 ms frames
 MONO_FRAME_BYTES = SAMPLE_RATE * 2 * FRAME_MS // 1000  # 1920 bytes
-PACKET_BYTES = 960             # split frames so UDP stays under the MTU
+PACKET_BYTES = 960             # PCM per packet (480 samples, 10 ms)
+# Each UDP packet is [4-byte big-endian sequence][PCM]. UDP can reorder or
+# lose packets in transit, which the console played as scrambled audio
+# ("1-3-2-4" on the hardware test); the sequence lets the Vita drop stale
+# ones and keep the stream in order.
+SEQ_HEADER = struct.Struct("!I")
+SAMPLES_PER_FRAME = MONO_FRAME_BYTES // 2   # 960
 
 
 class _MonoMixSink(voice_recv.AudioSink):
@@ -116,16 +124,24 @@ class VoiceRelay:
                  channel.name, vita_ip, VOICE_UDP_PORT)
 
     async def _run(self):
-        # Drain-driven, not clock-driven: Windows can't sleep an exact
-        # 20ms, so instead of pretending it can, every wakeup ships as
-        # many full 20ms frames as have accumulated. The Vita's ring
-        # buffer absorbs the burstiness; nothing is ever discarded here.
+        # Rate-paced: send audio at real-time 48 kHz, no faster. The old
+        # "dump everything accumulated each wakeup" burst overran the
+        # console's receive buffer (dropped packets = garble) and let the
+        # Vita's buffer pile up (the phrase arriving "much later"). We
+        # track how many samples SHOULD have gone out by now against the
+        # wall clock and send only up to that, one sequence-tagged frame
+        # at a time. Nothing is discarded; silence gaps reset the clock so
+        # no debt is dumped when someone starts talking again.
+        seq = 0
+        start = time.monotonic()
+        sent_samples = 0
         try:
             while True:
-                await asyncio.sleep(0.008)
+                await asyncio.sleep(0.005)
                 if not self._sink:
                     continue
-                while True:
+                target = int((time.monotonic() - start) * SAMPLE_RATE)
+                while sent_samples < target:
                     mixed = None
                     for buf in self._sink.bufs.values():
                         if len(buf) < MONO_FRAME_BYTES:
@@ -135,10 +151,14 @@ class VoiceRelay:
                         mixed = chunk if mixed is None else \
                             audioop.add(mixed, chunk, 2)   # sum, clipped
                     if mixed is None:
+                        sent_samples = target   # silent gap: no debt
                         break
                     for off in range(0, len(mixed), PACKET_BYTES):
-                        self._sock.sendto(mixed[off:off + PACKET_BYTES],
-                                          self._target)
+                        self._sock.sendto(
+                            SEQ_HEADER.pack(seq) + mixed[off:off + PACKET_BYTES],
+                            self._target)
+                        seq = (seq + 1) & 0xFFFFFFFF
+                    sent_samples += SAMPLES_PER_FRAME
         except asyncio.CancelledError:
             pass
         except Exception:

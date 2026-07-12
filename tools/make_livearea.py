@@ -177,16 +177,15 @@ else:
     sil.alpha_composite(dark_clyde, (356, 368))
     bg.alpha_composite(sil)
 
-# Title block: compact, left column, BELOW the console's floating system
-# icons (browser/update/plus overlay the top-center down to ~bg y 125) and
-# entirely clear of the gate frame (bg x ~274-590, y ~167+). Hardware
-# lesson: anything crossing those regions reads as clutter.
-bg.alpha_composite(rounded(src.resize((46, 46), Image.LANCZOS), 11), (56, 120))
-d.text((113, 125), "DawnCord", font=font(34), fill=(10, 10, 25, 160))  # shadow
-d.text((112, 124), "DawnCord", font=font(34), fill=(255, 255, 255, 255))
-d.text((113, 166), "Discord for PS Vita", font=font(18, bold=False), fill=SUBTLE + (255,))
-# Short divider, stops well before the gate.
-d.line([(56, 198), (264, 198)], fill=BLURPLE + (150,), width=2)
+# Title block: top-left corner, diagonal to the central gate (hardware
+# request). Compact enough to stay left of the floating system icons
+# (they start around bg x300) and far above the gate frame (y167+).
+bg.alpha_composite(rounded(src.resize((44, 44), Image.LANCZOS), 10), (56, 64))
+d.text((109, 71), "DawnCord", font=font(32), fill=(10, 10, 25, 160))  # shadow
+d.text((108, 70), "DawnCord", font=font(32), fill=(255, 255, 255, 255))
+d.text((109, 108), "Discord for PS Vita", font=font(17, bold=False), fill=SUBTLE + (255,))
+# Short divider, underlines the text only.
+d.line([(56, 136), (240, 136)], fill=BLURPLE + (150,), width=2)
 
 # Credit in the bottom strip, on a dark pill so it reads on any artwork,
 # lifted off the bottom edge for the same crop reason.

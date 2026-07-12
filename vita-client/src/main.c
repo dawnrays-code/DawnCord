@@ -524,6 +524,55 @@ static void first_boot_setup(void)
     config_save_file(&cfg, CONFIG_PATH);
 }
 
+/* Re-establish a dropped companion link: reconnect, re-handshake, restart
+   the receiver and re-request whatever the user is looking at. Blocks
+   briefly; returns 0 on success. */
+static int try_reconnect(void)
+{
+    net_disconnect(&conn);
+    voice_stop();                 /* the voice socket died with the link */
+    st.voice_id[0] = '\0';
+    st.voice_name[0] = '\0';
+
+    if (net_connect(&conn, cfg.host, cfg.port) < 0) {
+        char fh[CFG_HOST_LEN];
+        int fp = 0, nc = 0;
+        if (net_discover(fh, sizeof(fh), &fp, &nc) == 0) {
+            snprintf(cfg.host, sizeof(cfg.host), "%s", fh);
+            if (fp > 0)
+                cfg.port = fp;
+        }
+        if (net_connect(&conn, cfg.host, cfg.port) < 0)
+            return -1;
+    }
+
+    cJSON *hs = cJSON_CreateObject();
+    if (cfg.pair_code[0] != '\0')
+        cJSON_AddStringToObject(hs, "code", cfg.pair_code);
+    char *body = cJSON_PrintUnformatted(hs);
+    net_send_message(&conn, MSG_HANDSHAKE, body ? body : "{}");
+    cJSON_free(body);
+    cJSON_Delete(hs);
+
+    dawncord_message ack;
+    if (net_recv_blocking(&conn, &ack) != 0 || ack.type != MSG_HANDSHAKE_ACK) {
+        net_free_message(&ack);
+        net_disconnect(&conn);
+        return -1;
+    }
+    net_free_message(&ack);
+
+    net_start_receiver(&conn);
+    net_send_message(&conn, MSG_REQUEST_GUILDS, "{}");
+    if (view == VIEW_WORKSPACE && st.guild_id[0] != '\0')
+        request_channels(st.guild_id);
+    if (st.channel_id[0] != '\0') {
+        request_messages(st.channel_id);
+        request_members(st.channel_id);
+    }
+    return 0;
+}
+
 int main(void)
 {
     ui_init();
@@ -537,12 +586,7 @@ int main(void)
     if (config_load_file(&cfg, CONFIG_PATH) < 0)
         first_boot_setup();
 
-    {
-        char banner[96];
-        snprintf(banner, sizeof(banner), "DawnCord - Connecting to %s:%d...",
-                 cfg.host, cfg.port);
-        ui_draw_status(banner);
-    }
+    ui_draw_loading("DawnCord", "Connecting to the companion...", 0);
 
     if (net_connect(&conn, cfg.host, cfg.port) < 0) {
         /* The PC's IP may have changed (DHCP): try to rediscover it once. */
@@ -605,10 +649,29 @@ int main(void)
     SceCtrlData pad, prev;
     memset(&prev, 0, sizeof(prev));
 
-    int was_connected = 1;
+    int anim = 0;            /* drives the loading spinner */
+    int reconnect_cd = 0;   /* frames to wait between reconnect attempts */
 
     while (running) {
         sceCtrlPeekBufferPositive(0, &pad, 1);
+
+        /* Companion link dropped: dim reconnect screen + auto-retry. Only
+           SELECT (quit) is honoured while we're down. */
+        if (!conn.rx_running) {
+            unsigned int pressed = pad.buttons & ~prev.buttons;
+            if (pressed & SCE_CTRL_SELECT)
+                running = 0;
+            prev = pad;
+            ui_draw_loading("Connection lost",
+                            "Reconnecting to the companion...", anim++);
+            if (reconnect_cd > 0)
+                reconnect_cd--;
+            else if (try_reconnect() == 0)
+                state_set_status(&st, "");
+            else
+                reconnect_cd = 90;   /* ~1.5 s between tries */
+            continue;
+        }
 
         /* The IME overlay owns the buttons while it's up. */
         if (!ime_active()) {
@@ -627,11 +690,6 @@ int main(void)
         while (net_poll_message(&conn, &msg)) {
             process_server_message(&msg);
             net_free_message(&msg);
-        }
-
-        if (was_connected && !conn.rx_running) {
-            was_connected = 0;
-            state_set_status(&st, "Disconnected from companion");
         }
 
         if (st.typing_ttl > 0)

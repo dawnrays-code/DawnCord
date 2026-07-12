@@ -39,6 +39,11 @@ void ui_render(const app_state *st, dawncord_view view);
    (connecting, fatal errors). Also a complete frame. */
 void ui_draw_status(const char *text);
 
+/* Full-screen loading/connection screen: title, optional subtitle, and an
+   animated spinner. `frame` is any incrementing counter (drives the
+   animation). A complete frame on its own. */
+void ui_draw_loading(const char *title, const char *subtitle, int frame);
+
 /* Attachment thumbnails record their on-screen rects while rendering;
    this checks a (front touch) tap against them. Returns 1 and copies the
    image URL when one is hit. */

@@ -20,7 +20,7 @@ set(VITA_TITLEID  "DWNC00001")
 # install-over and the LiveArea keeps stale cached assets when it says the
 # same number as the installed build.
 if(NOT VITA_VERSION)
-  set(VITA_VERSION "00.31")
+  set(VITA_VERSION "00.32")
 endif()
 
 # Compile-time defaults; at runtime ux0:data/dawncord/config.txt overrides

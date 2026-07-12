@@ -11,14 +11,20 @@
 #define SAMPLE_RATE    48000
 #define GRAIN          512          /* samples per output call, ~10.7 ms */
 #define RING_SAMPLES   48000        /* 1 s of mono s16 */
-#define PRIME_SAMPLES  7200         /* ~150ms cushion: absorbs LAN jitter */
-#define MAX_BUFFERED   24000        /* cap latency ~0.5 s: drop older audio */
+#define PRIME_SAMPLES  4800         /* ~100ms cushion before playback starts */
+#define MAX_BUFFERED   14400        /* cap latency ~300ms: drop older audio */
 
 static int audio_port = -1;
 static int udp_sock = -1;
 static SceUID voice_thread = -1;
 static volatile int running = 0;
 static volatile int started = 0;
+
+/* Packet sequence: the companion tags every UDP packet with a 4-byte
+   big-endian counter. UDP reorders and loses packets, which played as
+   scrambled audio; we drop anything not strictly newer than the last. */
+static uint32_t last_seq = 0;
+static int have_seq = 0;
 
 /* Ring buffer, touched only by the voice thread once running. */
 static int16_t ring[RING_SAMPLES];
@@ -58,13 +64,23 @@ static int voice_thread_entry(SceSize args, void *argp)
 
     while (running) {
         /* Drain whatever UDP has arrived (non-blocking). Bounded so a flood
-           can't starve the output call below. */
-        for (int guard = 0; guard < 32; guard++) {
+           can't starve the output call below. Each packet is
+           [4-byte seq][PCM]; out-of-order or duplicate packets are dropped
+           by comparing the sequence with wrap-around. */
+        for (int guard = 0; guard < 48; guard++) {
             int n = sceNetRecvfrom(udp_sock, buf, sizeof(buf), 0, NULL, NULL);
-            if (n <= 0)
-                break;
-            int samples = n / 2;
-            const int16_t *s = (const int16_t *)buf;
+            if (n < 0)
+                break;              /* nothing more queued */
+            if (n < 6)
+                continue;           /* header + at least one sample */
+            uint32_t seq = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+                           ((uint32_t)buf[2] << 8) | (uint32_t)buf[3];
+            if (have_seq && (int32_t)(seq - last_seq) <= 0)
+                continue;           /* stale / reordered: drop */
+            last_seq = seq;
+            have_seq = 1;
+            int samples = (n - 4) / 2;
+            const int16_t *s = (const int16_t *)(buf + 4);
             for (int i = 0; i < samples; i++)
                 ring_push(s[i]);
         }
@@ -136,8 +152,14 @@ int voice_start(void)
     int nbio = 1;
     sceNetSetsockopt(udp_sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_NBIO,
                      &nbio, sizeof(nbio));
+    /* Roomy receive buffer: a short send burst shouldn't drop packets
+       while the audio thread is blocked in sceAudioOutOutput. */
+    int rcvbuf = 128 * 1024;
+    sceNetSetsockopt(udp_sock, SCE_NET_SOL_SOCKET, SCE_NET_SO_RCVBUF,
+                     &rcvbuf, sizeof(rcvbuf));
 
     r_head = r_tail = 0;
+    have_seq = 0;
     running = 1;
     /* Same priority as the network receiver: a known-good value (a too-low
        relative priority makes CreateThread fail). */
