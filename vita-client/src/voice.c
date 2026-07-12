@@ -11,7 +11,7 @@
 #define SAMPLE_RATE    48000
 #define GRAIN          512          /* samples per output call, ~10.7 ms */
 #define RING_SAMPLES   48000        /* 1 s of mono s16 */
-#define PRIME_SAMPLES  (GRAIN * 4)  /* cushion before playback starts */
+#define PRIME_SAMPLES  7200         /* ~150ms cushion: absorbs LAN jitter */
 #define MAX_BUFFERED   24000        /* cap latency ~0.5 s: drop older audio */
 
 static int audio_port = -1;

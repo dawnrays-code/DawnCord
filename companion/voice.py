@@ -41,7 +41,12 @@ class _MonoMixSink(voice_recv.AudioSink):
 
     def __init__(self):
         super().__init__()
-        self.frames: dict[int, bytes] = {}   # source -> latest 20ms mono frame
+        # Per-speaker accumulation buffers. The first cut kept only the
+        # LATEST 20ms frame per speaker and a jittery 20ms asyncio timer
+        # threw the rest away: a third of the samples never reached the
+        # Vita, which is exactly the garbled walkie-talkie the hardware
+        # test reported. Nothing gets dropped anymore.
+        self.bufs: dict[int, bytearray] = {}
         self._decoders: dict[int, discord.opus.Decoder] = {}
         self.rx = 0        # opus packets seen
         self.ok = 0        # decoded fine
@@ -69,10 +74,15 @@ class _MonoMixSink(voice_recv.AudioSink):
             return
         self.ok += 1
         # 48 kHz stereo s16 -> mono s16 (average the two channels)
-        self.frames[src] = audioop.tomono(pcm, 2, 0.5, 0.5)
+        buf = self.bufs.setdefault(src, bytearray())
+        buf.extend(audioop.tomono(pcm, 2, 0.5, 0.5))
+        # Latency guard: if a buffer grows past ~400ms (pump stalled),
+        # keep only the freshest 200ms.
+        if len(buf) > MONO_FRAME_BYTES * 20:
+            del buf[:-MONO_FRAME_BYTES * 10]
 
     def cleanup(self):
-        self.frames.clear()
+        self.bufs.clear()
         self._decoders.clear()
 
 
@@ -106,25 +116,29 @@ class VoiceRelay:
                  channel.name, vita_ip, VOICE_UDP_PORT)
 
     async def _run(self):
-        silence = b"\x00" * MONO_FRAME_BYTES
+        # Drain-driven, not clock-driven: Windows can't sleep an exact
+        # 20ms, so instead of pretending it can, every wakeup ships as
+        # many full 20ms frames as have accumulated. The Vita's ring
+        # buffer absorbs the burstiness; nothing is ever discarded here.
         try:
             while True:
-                await asyncio.sleep(FRAME_MS / 1000)
+                await asyncio.sleep(0.008)
                 if not self._sink:
                     continue
-                frames = list(self._sink.frames.values())
-                self._sink.frames.clear()
-                if not frames:
-                    continue
-                # Speakers can deliver different frame sizes (packet loss,
-                # varying Opus frame durations): pad everyone to the full
-                # 20 ms before mixing, or audioop.add refuses the sum.
-                frames = [(f + silence)[:MONO_FRAME_BYTES] for f in frames]
-                mixed = frames[0]
-                for f in frames[1:]:
-                    mixed = audioop.add(mixed, f, 2)   # sum with clipping
-                for off in range(0, len(mixed), PACKET_BYTES):
-                    self._sock.sendto(mixed[off:off + PACKET_BYTES], self._target)
+                while True:
+                    mixed = None
+                    for buf in self._sink.bufs.values():
+                        if len(buf) < MONO_FRAME_BYTES:
+                            continue
+                        chunk = bytes(buf[:MONO_FRAME_BYTES])
+                        del buf[:MONO_FRAME_BYTES]
+                        mixed = chunk if mixed is None else \
+                            audioop.add(mixed, chunk, 2)   # sum, clipped
+                    if mixed is None:
+                        break
+                    for off in range(0, len(mixed), PACKET_BYTES):
+                        self._sock.sendto(mixed[off:off + PACKET_BYTES],
+                                          self._target)
         except asyncio.CancelledError:
             pass
         except Exception:

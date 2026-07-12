@@ -14,8 +14,10 @@
    names). So: one font handle PER SIZE, five consolidated sizes, each
    atlas holding pixel-exact glyphs, pre-warmed at init so no atlas is
    ever touched mid-frame. */
+/* Raster sizes tuned for the 5" 220-DPI panel held at console distance:
+   one notch up from phone-comfortable (hardware feedback, twice). */
 #define FONT_SIZES 5
-static const int font_px[FONT_SIZES] = { 13, 15, 18, 20, 22 };
+static const int font_px[FONT_SIZES] = { 14, 16, 19, 22, 24 };
 static vita2d_font *ttf_h[FONT_SIZES];
 static int ttf_ok = 0;            /* all handles loaded */
 static vita2d_pgf *font = NULL;   /* fallback if the TTF doesn't load */
@@ -32,8 +34,8 @@ static int px_slot(int px)
 /* All text sizes are in PIXELS now: the TTF renders any size sharply,
    which is what finally kills the scaled-bitmap-PGF grain. */
 #define HEADER_H    48
-#define ROW_H       30
-#define LINE_H      26
+#define ROW_H       32
+#define LINE_H      28
 #define FOOTER_H    28
 #define CHAT_SCALE  20
 #define LIST_SCALE  19
@@ -45,7 +47,7 @@ static int px_slot(int px)
    two rails leave (960 - 230 - 190 = 540px). */
 #define RAIL_W      230
 #define MEMBERS_W   190
-#define RAIL_ROW_H  30
+#define RAIL_ROW_H  32
 #define RAIL_SCALE  18
 
 #define WRAP_MAX_LINES 12
