@@ -1,13 +1,15 @@
 # DawnCord
 
-Discord on the PlayStation Vita, for real: servers, DMs, live chat, images
-and voice channels, with a PC companion on your LAN doing the heavy lifting.
+A Discord client for the PlayStation Vita. It runs natively on the
+console and talks to a companion program on your PC over the local
+network, which handles everything the Vita cannot: servers, DMs, live
+chat, images and voice channels.
 
 ![DawnCord chat on a PS Vita](docs/screen-chat.png)
 
 ## Download
 
-Two files from the [releases page](../../releases), that's the whole setup:
+Two files from the [releases page](../../releases):
 
 | File | Where it goes |
 |------|---------------|
@@ -19,24 +21,27 @@ code. Start the app on the Vita, it finds the PC by itself, asks for that
 code once and remembers everything. The full walkthrough, token guide
 included, is in [docs/install.md](docs/install.md).
 
-Two extras in the same release, for when the plain .exe does not suit:
-`DawnCord-Companion-folder.zip` is the same program as a folder, which
-antivirus software objects to far less often (see
-[the FAQ](docs/faq.md) if yours eats the .exe), and Linux and macOS run
-it from source with `./start-companion.sh`.
+The same release carries two alternatives. `DawnCord-Companion-folder.zip`
+is the identical program shipped as a folder, which antivirus software
+objects to far less often; take it if yours deletes the .exe, and see
+[the FAQ](docs/faq.md) for why that happens. On Linux and macOS there is
+no prebuilt binary: run `./start-companion.sh` from a clone.
 
 ## What is this?
 
-Yet another Discord client for the PS Vita, with a modern UI and the
-features you actually expect in 2026. It takes inspiration from
-[VitaCord](https://github.com/devingDev/VitaCord), which dates back to when
-Discord had just come out, and tries to be what that project would look
-like today. The Vita never talks to Discord directly: everything a modern
-web stack demands stays on the PC, and the console gets a clean feed over
-the local network.
+Another Discord client for the PS Vita, built around what Discord looks
+like now rather than what it looked like in 2016. It takes inspiration
+from [VitaCord](https://github.com/devingDev/VitaCord), which dates back
+to when Discord had just come out and is missing most of what was added
+since.
 
-It was vibe-coded with Claude by a sysadmin who can read code better than
-he writes it. The longer story, and what I think about that, is in
+The Vita never talks to Discord directly. TLS, the gateway, image
+decoding and the voice codec all run on the PC, and the console receives
+something simple enough for hardware from 2011 to handle. That is also
+why the client fits in under a megabyte.
+
+It was vibe-coded with Claude by a sysadmin who reads code better than he
+writes it. The longer story, and what I think about that, is in
 [docs/about.md](docs/about.md).
 
 ## What it looks like
@@ -51,32 +56,37 @@ he writes it. The longer story, and what I think about that, is in
 
 ## What works
 
-- Live chat: message push with no polling, avatars, embeds, image
-  previews you can tap to expand, typing indicator
-- Discord-style layout: channels, chat and member list side by side, the
-  focused column growing to take the space
-- Voice channels: join and listen, see who is connected and whose dot
-  lights up while they talk. Newest feature, still settling.
-- Writing with the native on-screen keyboard
-- Pairing that sorts itself out on the LAN, and reconnection that does too
-- Crisp TTF text everywhere, drawn natively at 60fps
+- Live chat: messages arrive as they are sent rather than by polling,
+  with avatars, embeds, tappable image previews and a typing indicator
+- Channels, chat and member list side by side, with the column you are
+  using taking the space it needs
+- Voice channels: join one to listen, see who is connected and who is
+  talking. This is the newest part and the least settled.
+- Writing through the console's own on-screen keyboard
+- The console finds the PC on the network by itself, and reconnects on
+  its own if the link drops
+- TrueType text throughout, rendered on the console at 60fps
 
-On the way: talking back with the Vita's mic, voice that survives
-launching a game (as a taiHEN plugin), an update check, animated emoji.
+Being worked on, in this order: the microphone, so you can talk back;
+voice that keeps running when you launch a game, which needs a taiHEN
+plugin rather than an app; an update check; animated emoji. None of
+these exist yet.
 
-A note on voice: Discord end-to-end encrypts calls since March 2026, and
-the companion is the end that holds the keys. The console just plays what
-it is handed. Listening works, talking back does not exist yet. Details in
-[docs/tech.md](docs/tech.md).
+A note on voice: Discord has end-to-end encrypted calls since March 2026,
+and the companion is the end that holds the keys, so the console only
+ever receives audio that is already decoded. Listening works; the
+microphone is not built yet. [docs/tech.md](docs/tech.md) has the
+details.
 
 ## Is it safe?
 
-The companion logs in with your user token, which makes it a self-bot, and
-automating a user account is against Discord's Terms of Service. For this
-use the risk profile looks small, since it behaves like a normal session
-doing normal things at human pace, but nobody outside Discord can promise
-anything. Use a throwaway account if that bothers you. The honest, longer
-answer is in [docs/faq.md](docs/faq.md).
+The companion logs in with your own user token, which makes it a
+self-bot, and automating a user account is against Discord's Terms of
+Service. The risk looks small for this kind of use, since the companion
+reads what you would read and sends what you type at the speed you type
+it, but nobody outside Discord can promise anything. Use a throwaway
+account if that bothers you. The longer answer is in
+[docs/faq.md](docs/faq.md).
 
 ## Controls
 
