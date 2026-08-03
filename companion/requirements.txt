@@ -1,0 +1,20 @@
+discord.py-self>=2.0
+# Optional: browser login instead of pasting the token by hand. auth.py
+# falls back to manual entry when it is absent, and the frozen exe excludes
+# it, so install it only if you want that flow:
+#   pip install playwright && playwright install chromium
+# playwright>=1.40
+pillow>=10
+aiohttp>=3.9
+# Voice (listen-only): PyNaCl for the voice crypto, voice-recv to receive
+# and decode others' audio. Optional at runtime, only used if you join a
+# voice channel.
+PyNaCl>=1.5
+discord-ext-voice-recv>=0.5
+# DAVE: Discord end-to-end encrypts voice since March 2026. discord.py-self
+# uses this to negotiate the MLS group and encrypt what we send; we also use
+# it directly to DECRYPT what everyone else says (nothing in the stack does
+# that for you). Without it a voice connection is refused with code 4017.
+davey>=0.1.6
+# audioop was removed from the stdlib in 3.13; the mixer needs the backport.
+audioop-lts; python_version >= "3.13"

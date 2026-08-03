@@ -1,0 +1,835 @@
+#include <psp2/kernel/processmgr.h>
+#include <psp2/ctrl.h>
+#include <psp2/touch.h>
+
+#include "protocol.h"
+#include "network.h"
+#include "state.h"
+#include "ui.h"
+#include "ime.h"
+#include "config.h"
+#include "imgcache.h"
+#include "b64.h"
+#include "voice.h"
+
+#include "cJSON.h"
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Compile-time fallbacks, overridable at runtime via CONFIG_PATH
+   (ux0:data/dawncord/config.txt). DAWNCORD_PAIR_CODE must match the
+   companion's env var if one is set. */
+#ifndef COMPANION_HOST
+#define COMPANION_HOST "192.168.1.100"
+#endif
+#ifndef COMPANION_PORT
+#define COMPANION_PORT 9100
+#endif
+#ifndef DAWNCORD_PAIR_CODE
+#define DAWNCORD_PAIR_CODE ""
+#endif
+
+#define MESSAGE_FETCH_LIMIT 40
+
+static dawncord_config cfg;
+static dawncord_connection conn;
+static app_state st;
+static dawncord_view view = VIEW_GUILD_LIST;
+static int running = 1;
+
+/* Serialize with cJSON so user text is JSON-escaped correctly. */
+static void send_json(dawncord_msg_type type, cJSON *obj)
+{
+    char *body = cJSON_PrintUnformatted(obj);
+    if (body) {
+        net_send_message(&conn, type, body);
+        cJSON_free(body);
+    }
+    cJSON_Delete(obj);
+}
+
+static void request_channels(const char *guild_id)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "guild_id", guild_id);
+    send_json(MSG_REQUEST_CHANNELS, o);
+}
+
+static void request_messages(const char *channel_id)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "channel_id", channel_id);
+    cJSON_AddNumberToObject(o, "limit", MESSAGE_FETCH_LIMIT);
+    send_json(MSG_REQUEST_MESSAGES, o);
+}
+
+static void set_active_channel(const char *channel_id)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "channel_id", channel_id);
+    send_json(MSG_SET_CHANNEL, o);
+}
+
+static void request_members(const char *channel_id)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "channel_id", channel_id);
+    send_json(MSG_REQUEST_MEMBERS, o);
+}
+
+/* Voice (listen-only). Joining opens the local audio path immediately so
+   the companion's first UDP frames aren't lost; a VOICE_STATE reply of
+   active=false tears it back down. */
+/* The console's half of the voice-quality picture, mailed to the
+   companion where there is a log to put it in. */
+static void send_voice_stats(void)
+{
+    /* Zeros are sent on purpose: a report of all zeros from an active
+       session is the signature of a dead link, which used to be the one
+       condition that produced no report at all. */
+    uint32_t s[7];
+    voice_get_stats(s);
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "rx", s[0]);
+    cJSON_AddNumberToObject(o, "drop", s[1]);
+    cJSON_AddNumberToObject(o, "under", s[2]);
+    cJSON_AddNumberToObject(o, "resync", s[3]);
+    cJSON_AddNumberToObject(o, "trim", s[4]);
+    cJSON_AddNumberToObject(o, "reorder", s[5]);
+    cJSON_AddNumberToObject(o, "conceal", s[6]);
+    send_json(MSG_VOICE_RX_STATS, o);
+}
+
+static void leave_voice(void)
+{
+    if (st.voice_id[0] == '\0')
+        return;
+    send_voice_stats();
+    voice_stop();
+    st.voice_id[0] = '\0';
+    st.voice_name[0] = '\0';
+    net_send_message(&conn, MSG_LEAVE_VOICE, "{}");
+    state_set_status(&st, "Left voice");
+}
+
+static void toggle_voice(const st_named *c)
+{
+    if (strcmp(st.voice_id, c->id) == 0) {
+        leave_voice();
+        return;
+    }
+    if (st.voice_id[0]) {
+        /* Switching channels: report the outgoing session's numbers
+           before they get reset, or they vanish silently. */
+        send_voice_stats();
+        voice_stop();
+    }
+    snprintf(st.voice_id, ST_ID_LEN, "%s", c->id);
+    snprintf(st.voice_name, ST_NAME_LEN, "%s", c->name);
+    int vr = voice_start();
+    if (vr < 0) {
+        st.voice_id[0] = '\0';
+        /* Specific reason, so a failed join is diagnosable at a glance. */
+        state_set_status(&st, vr == -2 ? "Voice: network error"
+                            : vr == -3 ? "Voice: thread error"
+                                       : "Voice: audio port error");
+        return;
+    }
+    voice_set_muted(0);
+    st.voice_muted = 0;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "channel_id", c->id);
+    send_json(MSG_JOIN_VOICE, o);
+    /* Listening only: there is no microphone capture yet, so Discord shows
+       you muted on purpose rather than pretending otherwise. */
+    state_set_status(&st, "Joining voice (listen only)...");
+}
+
+/* Scroll-back: ask for the chunk of history right before the oldest
+   loaded message. The companion echoes "before" so the reply prepends
+   instead of replacing the window. */
+static void request_older_messages(void)
+{
+    if (st.history_pending || st.history_done ||
+        st.message_count == 0 || st.messages[0].id[0] == '\0')
+        return;
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "channel_id", st.channel_id);
+    cJSON_AddNumberToObject(o, "limit", ST_HISTORY_CHUNK);
+    cJSON_AddStringToObject(o, "before", st.messages[0].id);
+    send_json(MSG_REQUEST_MESSAGES, o);
+    st.history_pending = 1;
+}
+
+static void send_chat_message(const char *text)
+{
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddStringToObject(o, "channel_id", st.channel_id);
+    cJSON_AddStringToObject(o, "content", text);
+    send_json(MSG_SEND_MESSAGE, o);
+    state_set_status(&st, "Sending...");
+}
+
+/* ---- server -> state ---- */
+
+static void process_server_message(dawncord_message *msg)
+{
+    switch (msg->type) {
+    case MSG_GUILD_LIST:
+        if (state_parse_guilds(&st, msg->payload) == 0)
+            state_set_status(&st, "%d servers", st.guild_count);
+        break;
+
+    case MSG_CHANNEL_LIST:
+        if (state_parse_channels(&st, msg->payload) == 0)
+            state_set_status(&st, "");
+        break;
+
+    case MSG_MESSAGE_LIST:
+        if (state_parse_messages(&st, msg->payload) == 0)
+            state_set_status(&st, "");
+        break;
+
+    case MSG_MESSAGE_NEW:
+        state_push_message(&st, msg->payload);
+        break;
+
+    case MSG_MEMBER_LIST:
+        state_parse_members(&st, msg->payload);
+        break;
+
+    case MSG_TYPING:
+        state_parse_typing(&st, msg->payload);
+        break;
+
+    case MSG_VOICE_SPEAKING:
+        state_parse_speaking(&st, msg->payload);
+        break;
+
+    case MSG_VOICE_MEMBERS_STALE: {
+        /* Only refetch if it concerns the guild we are looking at. */
+        cJSON *root = cJSON_Parse(msg->payload);
+        const cJSON *g = root ?
+            cJSON_GetObjectItemCaseSensitive(root, "guild_id") : NULL;
+        if (cJSON_IsString(g) && st.guild_id[0] &&
+            strcmp(g->valuestring, st.guild_id) == 0)
+            request_channels(st.guild_id);
+        cJSON_Delete(root);
+        break;
+    }
+
+    case MSG_VOICE_STATE: {
+        cJSON *root = cJSON_Parse(msg->payload);
+        int act = root && cJSON_IsTrue(
+            cJSON_GetObjectItemCaseSensitive(root, "active"));
+        if (act) {
+            state_set_status(&st, "In voice: %s", st.voice_name);
+            /* The connected-users rows come with the channel list, which
+               was fetched before we joined: without this you never appear
+               in the very channel you just entered. */
+            if (st.guild_id[0])
+                request_channels(st.guild_id);
+        } else {
+            /* Companion couldn't join: tear the local audio path down. */
+            voice_stop();
+            st.voice_id[0] = '\0';
+            st.voice_name[0] = '\0';
+            state_set_status(&st, "Voice unavailable");
+        }
+        cJSON_Delete(root);
+        break;
+    }
+
+    case MSG_MESSAGE_SENT_ACK: {
+        cJSON *root = cJSON_Parse(msg->payload);
+        int ok = root && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "success"));
+        cJSON_Delete(root);
+        if (ok) {
+            state_set_status(&st, "Sent");
+            /* Own messages aren't pushed back (companion skips self): re-fetch.
+               Skip if the user already backed out of the channel. */
+            if (view == VIEW_WORKSPACE && st.channel_id[0] != '\0')
+                request_messages(st.channel_id);
+        } else {
+            state_set_status(&st, "Send failed");
+        }
+        break;
+    }
+
+    case MSG_IMAGE_DATA: {
+        cJSON *root = cJSON_Parse(msg->payload);
+        const cJSON *key = root ? cJSON_GetObjectItemCaseSensitive(root, "key") : NULL;
+        const cJSON *data = root ? cJSON_GetObjectItemCaseSensitive(root, "data") : NULL;
+        if (cJSON_IsString(key)) {
+            if (cJSON_IsString(data) && data->valuestring[0]) {
+                size_t cap = strlen(data->valuestring) * 3 / 4 + 4;
+                uint8_t *jpeg = malloc(cap);
+                if (jpeg) {
+                    int n = b64_decode(data->valuestring, jpeg, cap);
+                    img_store(key->valuestring, n > 0 ? jpeg : NULL,
+                              n > 0 ? (size_t)n : 0);
+                    free(jpeg);
+                }
+            } else {
+                /* Companion has no image for this key: settle as failed
+                   so it isn't re-requested every frame. */
+                img_store(key->valuestring, NULL, 0);
+            }
+        }
+        cJSON_Delete(root);
+        break;
+    }
+
+    case MSG_ERROR: {
+        cJSON *root = cJSON_Parse(msg->payload);
+        const cJSON *err = root ? cJSON_GetObjectItemCaseSensitive(root, "error") : NULL;
+        state_set_status(&st, "Error: %s",
+                         cJSON_IsString(err) ? err->valuestring : "unknown");
+        cJSON_Delete(root);
+        break;
+    }
+
+    default:
+        break;
+    }
+}
+
+/* ---- input ---- */
+
+/* Held directions auto-repeat: first move immediately, then every
+   5 frames after an 18-frame delay. `held` is any truthy condition
+   (D-pad bit or analog stick past its deadzone). */
+static int repeat_gate(int held, int *frames)
+{
+    if (!held) {
+        *frames = 0;
+        return 0;
+    }
+    (*frames)++;
+    return *frames == 1 || (*frames > 18 && *frames % 5 == 0);
+}
+
+/* Rows that exist only to be looked at: category headers and the "vu:"
+   voice-user lines under voice channels. The cursor skips both. */
+static int is_category(const char *id)
+{
+    return strncmp(id, "cat:", 4) == 0 || strncmp(id, "vu:", 3) == 0;
+}
+
+static void move_selection(int delta)
+{
+    if (view == VIEW_GUILD_LIST) {
+        if (st.guild_count > 0) {
+            st.guild_sel += delta;
+            if (st.guild_sel < 0) st.guild_sel = 0;
+            if (st.guild_sel >= st.guild_count) st.guild_sel = st.guild_count - 1;
+        }
+        return;
+    }
+
+    /* Workspace: UP/DOWN drives whichever pane holds the focus. */
+    if (st.focus == FOCUS_CHANNELS && st.channel_count > 0) {
+        /* Skip category header rows in the direction of travel. */
+        int i = st.channel_sel + delta;
+        while (i >= 0 && i < st.channel_count && is_category(st.channels[i].id))
+            i += delta;
+        if (i >= 0 && i < st.channel_count)
+            st.channel_sel = i;
+    } else if (st.focus == FOCUS_CHAT && st.message_count > 0) {
+        /* UP (delta -1) digs into history, DOWN comes back to the newest. */
+        st.chat_scroll -= delta;
+        if (st.chat_scroll < 0) st.chat_scroll = 0;
+        if (st.chat_scroll > st.message_count - 1)
+            st.chat_scroll = st.message_count - 1;
+        /* Nearing the top of what's loaded: fetch the previous chunk. */
+        if (delta < 0 && st.chat_scroll >= st.message_count - 8)
+            request_older_messages();
+    } else if (st.focus == FOCUS_MEMBERS && st.member_count > 0) {
+        st.member_scroll += delta;
+        if (st.member_scroll < 0) st.member_scroll = 0;
+        if (st.member_scroll > st.member_count - 1)
+            st.member_scroll = st.member_count - 1;
+    }
+}
+
+static void move_focus(int delta)
+{
+    if (view != VIEW_WORKSPACE)
+        return;
+    /* No member rail while no channel is open: focus stops at the chat. */
+    int max_focus = st.channel_id[0] ? FOCUS_MEMBERS : FOCUS_CHAT;
+    st.focus += delta;
+    if (st.focus < FOCUS_CHANNELS) st.focus = FOCUS_CHANNELS;
+    if (st.focus > max_focus)      st.focus = max_focus;
+}
+
+static void open_channel(const st_named *c)
+{
+    snprintf(st.channel_id, ST_ID_LEN, "%s", c->id);
+    snprintf(st.channel_name, ST_NAME_LEN, "%s", c->name);
+    st.message_count = 0;
+    st.member_count = 0;
+    st.chat_scroll = 0;
+    st.member_scroll = 0;
+    st.history_pending = 0;
+    st.history_done = 0;
+    st.typing_ttl = 0;
+    st.expanded_image[0] = '\0';
+    state_set_status(&st, "Loading messages...");
+    set_active_channel(st.channel_id);   /* enables live push */
+    request_messages(st.channel_id);
+    request_members(st.channel_id);
+    st.focus = FOCUS_CHAT;
+}
+
+static void confirm_selection(void)
+{
+    if (view == VIEW_GUILD_LIST && st.guild_count > 0) {
+        const st_named *g = &st.guilds[st.guild_sel];
+        snprintf(st.guild_id, ST_ID_LEN, "%s", g->id);
+        snprintf(st.guild_name, ST_NAME_LEN, "%s", g->name);
+        st.channel_count = 0;
+        st.channel_sel = 0;
+        st.channel_id[0] = '\0';
+        st.channel_name[0] = '\0';
+        st.message_count = 0;
+        st.member_count = 0;
+        st.focus = FOCUS_CHANNELS;
+        state_set_status(&st, "Loading channels...");
+        request_channels(st.guild_id);
+        view = VIEW_WORKSPACE;
+    } else if (view == VIEW_WORKSPACE && st.focus == FOCUS_CHANNELS &&
+               st.channel_count > 0) {
+        const st_named *c = &st.channels[st.channel_sel];
+        if (is_category(c->id))
+            return;              /* headers aren't channels */
+        if (c->is_voice)
+            toggle_voice(c);     /* voice channels: listen, don't open chat */
+        else
+            open_channel(c);
+    }
+}
+
+static void go_back(void)
+{
+    if (view != VIEW_WORKSPACE)
+        return;
+    if (st.channel_id[0] != '\0')
+        set_active_channel("0");             /* stop pushes for this channel */
+    st.channel_id[0] = '\0';
+    st.channel_name[0] = '\0';
+    st.message_count = 0;
+    st.member_count = 0;
+    st.typing_ttl = 0;
+    st.expanded_image[0] = '\0';
+    state_set_status(&st, "");
+    view = VIEW_GUILD_LIST;
+}
+
+/* Front-touch taps: open an attachment thumbnail full-size, tap again to
+   close. Touch coordinates come in panel space (1920x1088), screen is
+   half that. */
+static void handle_touch(void)
+{
+    static int was_touching = 0;
+    SceTouchData td;
+    if (sceTouchPeek(SCE_TOUCH_PORT_FRONT, &td, 1) < 0)
+        return;
+    int touching = td.reportNum > 0;
+    if (touching && !was_touching) {
+        int tx = td.report[0].x / 2;
+        int ty = td.report[0].y / 2;
+        if (st.expanded_image[0]) {
+            st.expanded_image[0] = '\0';
+        } else if (view == VIEW_WORKSPACE) {
+            char url[ST_URL_LEN];
+            if (ui_hit_image(tx, ty, url, sizeof(url)))
+                snprintf(st.expanded_image, sizeof(st.expanded_image),
+                         "%s", url);
+        }
+    }
+    was_touching = touching;
+}
+
+static void handle_input(SceCtrlData *pad, SceCtrlData *prev)
+{
+    unsigned int pressed = pad->buttons & ~prev->buttons;
+    static int up_frames = 0, down_frames = 0;
+
+    /* The attachment viewer owns the input while it's open. */
+    if (st.expanded_image[0]) {
+        if (pressed & (SCE_CTRL_CIRCLE | SCE_CTRL_CROSS))
+            st.expanded_image[0] = '\0';
+        if (pressed & SCE_CTRL_SELECT)
+            running = 0;
+        return;
+    }
+
+    /* D-pad or either analog stick, same auto-repeat cadence. */
+    int up_held   = (pad->buttons & SCE_CTRL_UP)   || pad->ly < 60  || pad->ry < 60;
+    int down_held = (pad->buttons & SCE_CTRL_DOWN) || pad->ly > 196 || pad->ry > 196;
+
+    /* The server list is a grid now: up and down move by a whole row. */
+    int vstep = view == VIEW_GUILD_LIST ? GUILD_GRID_COLS : 1;
+    if (repeat_gate(up_held, &up_frames))
+        move_selection(-vstep);
+    if (repeat_gate(down_held, &down_frames))
+        move_selection(vstep);
+
+    if (pressed & SCE_CTRL_CROSS)
+        confirm_selection();
+    if (pressed & SCE_CTRL_CIRCLE)
+        go_back();
+
+    /* In the workspace, left and right hop between panes. In the server
+       grid they walk along the row. */
+    if (pressed & (SCE_CTRL_LEFT | SCE_CTRL_LTRIGGER)) {
+        if (view == VIEW_GUILD_LIST)
+            move_selection(-1);
+        else
+            move_focus(-1);
+    }
+    if (pressed & (SCE_CTRL_RIGHT | SCE_CTRL_RTRIGGER)) {
+        if (view == VIEW_GUILD_LIST)
+            move_selection(1);
+        else
+            move_focus(1);
+    }
+
+    /* Square silences what you hear without leaving the channel. There is
+       nothing to mute on the way out yet: the microphone is not built. */
+    if ((pressed & SCE_CTRL_SQUARE) && st.voice_id[0]) {
+        voice_set_muted(!voice_is_muted());
+        st.voice_muted = voice_is_muted();
+        state_set_status(&st, st.voice_muted ? "Voice muted" : "Voice on");
+    }
+
+    if ((pressed & SCE_CTRL_TRIANGLE) && view == VIEW_WORKSPACE) {
+        state_set_status(&st, "Refreshing...");
+        /* Channels too: it's how the voice-user rows get fresh names. */
+        request_channels(st.guild_id);
+        if (st.channel_id[0] != '\0') {
+            request_messages(st.channel_id);
+            request_members(st.channel_id);
+        }
+    }
+
+    if ((pressed & SCE_CTRL_START) && view == VIEW_WORKSPACE &&
+        st.channel_id[0] != '\0') {
+        char title[ST_NAME_LEN + 16];
+        snprintf(title, sizeof(title), "Message #%s", st.channel_name);
+        if (ime_start(title, "") < 0)
+            state_set_status(&st, "Keyboard unavailable");
+    }
+
+    if (pressed & SCE_CTRL_SELECT)
+        running = 0;
+}
+
+/* ---- entry point ---- */
+
+static int fatal(const char *text)
+{
+    ui_draw_status(text);
+    sceKernelDelayThread(5 * 1000 * 1000);
+    ui_term();
+    sceKernelExitProcess(0);
+    return 1;
+}
+
+/* Open the native keyboard and pump frames until the user confirms or
+   cancels. Returns 0 with the text in out, -1 on cancel/failure. */
+static int setup_prompt(const char *title, const char *initial,
+                        char *out, int out_size)
+{
+    if (ime_start(title, initial) < 0)
+        return -1;
+    for (;;) {
+        ui_draw_status(title);
+        ime_status s = ime_update(out, out_size);
+        if (s == IME_DONE)
+            return 0;
+        if (s == IME_CANCELED || s == IME_NONE)
+            return -1;
+    }
+}
+
+/* No config file yet: find the companion by LAN broadcast, or fall back to
+   asking for the PC's IP with the keyboard. Saves the result so the next
+   boot skips all of this. */
+static void first_boot_setup(void)
+{
+    ui_draw_status("First boot - looking for the companion on your network...");
+
+    char found_host[CFG_HOST_LEN];
+    int found_port = 0, needs_code = 0;
+
+    if (net_discover(found_host, sizeof(found_host),
+                     &found_port, &needs_code) == 0) {
+        snprintf(cfg.host, sizeof(cfg.host), "%s", found_host);
+        if (found_port > 0)
+            cfg.port = found_port;
+        if (needs_code && cfg.pair_code[0] == '\0') {
+            char code[CFG_CODE_LEN];
+            if (setup_prompt("Pairing code (shown on the companion PC)", "",
+                             code, sizeof(code)) == 0 && code[0] != '\0')
+                snprintf(cfg.pair_code, sizeof(cfg.pair_code), "%s", code);
+        }
+    } else {
+        char buf[CFG_HOST_LEN];
+        if (setup_prompt("Companion PC IP (e.g. 192.168.1.42)", cfg.host,
+                         buf, sizeof(buf)) == 0 && buf[0] != '\0')
+            snprintf(cfg.host, sizeof(cfg.host), "%s", buf);
+
+        char code[CFG_CODE_LEN];
+        if (setup_prompt("Pairing code (shown on the companion PC)", cfg.pair_code,
+                         code, sizeof(code)) == 0)
+            snprintf(cfg.pair_code, sizeof(cfg.pair_code), "%s", code);
+    }
+
+    config_save_file(&cfg, CONFIG_PATH);
+}
+
+/* Re-establish a dropped companion link: reconnect, re-handshake, restart
+   the receiver and re-request whatever the user is looking at. Blocks
+   briefly; returns 0 on success. */
+static int try_reconnect(void)
+{
+    net_disconnect(&conn);
+    voice_stop();                 /* the voice socket died with the link */
+    st.voice_id[0] = '\0';
+    st.voice_name[0] = '\0';
+
+    if (net_connect(&conn, cfg.host, cfg.port) < 0) {
+        char fh[CFG_HOST_LEN];
+        int fp = 0, nc = 0;
+        if (net_discover(fh, sizeof(fh), &fp, &nc) == 0) {
+            snprintf(cfg.host, sizeof(cfg.host), "%s", fh);
+            if (fp > 0)
+                cfg.port = fp;
+        }
+        if (net_connect(&conn, cfg.host, cfg.port) < 0)
+            return -1;
+    }
+
+    cJSON *hs = cJSON_CreateObject();
+    if (cfg.pair_code[0] != '\0')
+        cJSON_AddStringToObject(hs, "code", cfg.pair_code);
+    char *body = cJSON_PrintUnformatted(hs);
+    net_send_message(&conn, MSG_HANDSHAKE, body ? body : "{}");
+    cJSON_free(body);
+    cJSON_Delete(hs);
+
+    dawncord_message ack;
+    if (net_recv_blocking(&conn, &ack) != 0 || ack.type != MSG_HANDSHAKE_ACK) {
+        net_free_message(&ack);
+        net_disconnect(&conn);
+        return -1;
+    }
+    net_free_message(&ack);
+
+    net_start_receiver(&conn);
+    net_send_message(&conn, MSG_REQUEST_GUILDS, "{}");
+    if (view == VIEW_WORKSPACE && st.guild_id[0] != '\0')
+        request_channels(st.guild_id);
+    if (st.channel_id[0] != '\0') {
+        request_messages(st.channel_id);
+        request_members(st.channel_id);
+    }
+    return 0;
+}
+
+/* Startup handshake, run off the main thread so the UI keeps animating.
+   0 while working, 1 once connected, -1 on failure. */
+static volatile int boot_state = 0;
+static volatile int boot_version = 1;
+static char boot_note[64] = "";
+
+static int boot_thread(SceSize args, void *argp)
+{
+    (void)args; (void)argp;
+
+    if (net_connect(&conn, cfg.host, cfg.port) < 0) {
+        /* The PC's IP may have changed (DHCP): rediscover it once. */
+        snprintf(boot_note, sizeof(boot_note), "Looking for the companion...");
+        char host[CFG_HOST_LEN];
+        int port = 0, needs_code = 0;
+        if (net_discover(host, sizeof(host), &port, &needs_code) == 0) {
+            snprintf(cfg.host, sizeof(cfg.host), "%s", host);
+            if (port > 0)
+                cfg.port = port;
+            config_save_file(&cfg, CONFIG_PATH);
+        }
+        if (net_connect(&conn, cfg.host, cfg.port) < 0) {
+            boot_state = -1;
+            return sceKernelExitDeleteThread(0);
+        }
+    }
+
+    snprintf(boot_note, sizeof(boot_note), "Signing in...");
+    cJSON *hs = cJSON_CreateObject();
+    if (cfg.pair_code[0] != '\0')
+        cJSON_AddStringToObject(hs, "code", cfg.pair_code);
+    char *body = cJSON_PrintUnformatted(hs);
+    net_send_message(&conn, MSG_HANDSHAKE, body ? body : "{}");
+    cJSON_free(body);
+    cJSON_Delete(hs);
+
+    dawncord_message ack;
+    if (net_recv_blocking(&conn, &ack) != 0 || ack.type != MSG_HANDSHAKE_ACK) {
+        net_free_message(&ack);
+        net_disconnect(&conn);
+        boot_state = -1;
+        return sceKernelExitDeleteThread(0);
+    }
+
+    /* An old companion still on the PC answers with obsolete semantics. */
+    cJSON *root = cJSON_Parse(ack.payload);
+    const cJSON *v = root ?
+        cJSON_GetObjectItemCaseSensitive(root, "version") : NULL;
+    if (cJSON_IsNumber(v))
+        boot_version = (int)v->valuedouble;
+    cJSON_Delete(root);
+    net_free_message(&ack);
+
+    boot_state = 1;
+    return sceKernelExitDeleteThread(0);
+}
+
+int main(void)
+{
+    ui_init();
+    state_init(&st);
+
+    sceCtrlSetSamplingMode(SCE_CTRL_MODE_ANALOG);
+    sceTouchSetSamplingState(SCE_TOUCH_PORT_FRONT,
+                             SCE_TOUCH_SAMPLING_STATE_START);
+
+    config_defaults(&cfg, COMPANION_HOST, COMPANION_PORT, DAWNCORD_PAIR_CODE);
+    if (config_load_file(&cfg, CONFIG_PATH) < 0)
+        first_boot_setup();
+
+    /* Connecting and handshaking both block for seconds, and a blocked
+       main thread cannot draw: that is why startup was a frozen dark
+       screen. Do it on its own thread and animate the wait. */
+    {
+        SceUID th = sceKernelCreateThread("dawncord_boot", boot_thread,
+                                          0x10000100, 0x10000, 0, 0, NULL);
+        if (th < 0)
+            return fatal("Could not start the connection thread.");
+        sceKernelStartThread(th, 0, NULL);
+
+        int f = 0;
+        while (boot_state == 0) {
+            ui_draw_loading("DawnCord",
+                            boot_note[0] ? boot_note
+                                         : "Connecting to the companion...", f++);
+        }
+        if (boot_state < 0)
+            return fatal("Connection failed. Is the companion running?\n"
+                         "Config: ux0:data/dawncord/config.txt "
+                         "(delete it to re-run setup)");
+    }
+
+    /* Start the background receiver AFTER the handshake, then request guilds.
+       The outdated-companion warning is a sticky flag, not a status line:
+       a status gets overwritten by the next event and nobody sees it. */
+    st.companion_old = boot_version < 3;
+    net_start_receiver(&conn);
+    state_set_status(&st, "Loading servers...");
+    net_send_message(&conn, MSG_REQUEST_GUILDS, "{}");
+
+    SceCtrlData pad, prev;
+    memset(&prev, 0, sizeof(prev));
+
+    int anim = 0;            /* drives the loading spinner */
+    int reconnect_cd = 0;   /* frames to wait between reconnect attempts */
+    int stats_cd = 0;       /* frames until the next voice link report */
+
+    while (running) {
+        sceCtrlPeekBufferPositive(0, &pad, 1);
+
+        /* While in voice, report the link counters every ~10s so the
+           companion log shows what the Wi-Fi delivered as it happens. */
+        if (voice_active() && conn.rx_running) {
+            if (++stats_cd >= 600) {
+                stats_cd = 0;
+                send_voice_stats();
+            }
+        } else {
+            stats_cd = 0;
+        }
+
+        /* Companion link dropped: dim reconnect screen + auto-retry. Only
+           SELECT (quit) is honoured while we're down. */
+        if (!conn.rx_running) {
+            unsigned int pressed = pad.buttons & ~prev.buttons;
+            if (pressed & SCE_CTRL_SELECT)
+                running = 0;
+            prev = pad;
+            ui_draw_loading("Connection lost",
+                            "Reconnecting to the companion...", anim++);
+            if (reconnect_cd > 0)
+                reconnect_cd--;
+            else if (try_reconnect() == 0)
+                state_set_status(&st, "");
+            else
+                reconnect_cd = 90;   /* ~1.5 s between tries */
+            continue;
+        }
+
+        /* The IME overlay owns the buttons while it's up. */
+        if (!ime_active()) {
+            handle_input(&pad, &prev);
+            handle_touch();
+        }
+        prev = pad;
+
+        char typed[IME_MAX_INPUT * 3 + 1];
+        ime_status is = ime_update(typed, sizeof(typed));
+        if (is == IME_DONE && typed[0] != '\0')
+            send_chat_message(typed);
+
+        /* Drain every message queued by the receiver thread this frame. */
+        dawncord_message msg;
+        while (net_poll_message(&conn, &msg)) {
+            process_server_message(&msg);
+            net_free_message(&msg);
+        }
+
+        if (st.typing_ttl > 0)
+            st.typing_ttl--;
+
+        ui_render(&st, view);
+        img_gc();   /* frees evicted textures once the GPU is done with them */
+
+        /* Fetch whatever the renderer just discovered it's missing
+           (avatars, icons, attachment thumbnails). Cache keys are either a
+           bare URL (avatar, 64px, drawn round) or "url#size" for
+           attachments; the companion gets the real URL plus the size. */
+        char img_key[IMG_KEY_LEN];
+        for (int k = 0; k < 3 && img_next_request(img_key, sizeof(img_key)); k++) {
+            char url[IMG_KEY_LEN];
+            int size = 64;
+            snprintf(url, sizeof(url), "%s", img_key);
+            char *hash = strrchr(url, '#');
+            if (hash && hash[1]) {
+                size = atoi(hash + 1);
+                *hash = '\0';
+            }
+            cJSON *o = cJSON_CreateObject();
+            cJSON_AddStringToObject(o, "url", url);
+            cJSON_AddStringToObject(o, "key", img_key);
+            cJSON_AddNumberToObject(o, "size", size);
+            send_json(MSG_REQUEST_IMAGE, o);
+        }
+    }
+
+    voice_stop();
+    net_disconnect(&conn);
+    ui_term();
+    sceKernelExitProcess(0);
+    return 0;
+}
